@@ -759,6 +759,32 @@ canvas.chart.tall{height:320px}
 .card .tbl{font-size:13.5px}
 .hs:hover{background:var(--panel2)}
 .swatch{display:inline-block;width:14px;height:4px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.dot{display:inline-block;width:12px;height:12px;border-radius:50%;flex:none;vertical-align:middle}
+.dl{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.cmpbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-4px 0 12px}
+.cmpbar .lbl{color:var(--muted);font-size:13px}
+.cmpbar>button{min-height:40px;padding:6px 14px}
+.chip{display:inline-flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:3px 4px 3px 12px;min-height:40px;font-size:13.5px}
+.chip.main{padding-right:14px}
+.chip select{width:auto;min-height:32px;padding:3px 8px;font-size:13px;border-radius:8px}
+.chip button{min-height:32px;min-width:32px;padding:2px 8px;border-radius:99px;background:transparent;border-color:transparent;color:var(--muted)}
+.cmpgrid{display:grid;gap:12px;grid-template-columns:minmax(260px,1fr) minmax(0,2.2fr);align-items:start}
+@media (max-width:900px){.cmpgrid{grid-template-columns:minmax(0,1fr)}}
+.tbl.cmp{table-layout:fixed}
+.tbl.cmp th,.tbl.cmp td{text-align:center;white-space:normal}
+.tbl.cmp th:first-child,.tbl.cmp td:first-child{text-align:left;position:sticky;left:0;background:var(--panel);z-index:1}
+.tbl.cmp thead th{vertical-align:bottom;border-top:3px solid var(--c,var(--line));color:var(--fg);font-weight:600;line-height:1.25;padding-top:8px}
+.tbl.cmp thead th:first-child{border-top-color:transparent}
+.tbl.cmp thead th small{display:block;color:var(--muted);font-weight:500;font-size:12px}
+.tbl.cmp tr.sec td{color:var(--muted);text-transform:uppercase;font-size:12px;letter-spacing:.5px;padding-top:16px;font-weight:600;text-align:left}
+.tbl.cmp td.best{color:var(--ok);font-weight:600}
+.tbl.cmp td.na{color:var(--muted)}
+.mapbanner{background:#1d2a3a;border:1px solid var(--acc);border-radius:10px;padding:10px 14px;margin:0 0 10px}
+#map.pick{cursor:crosshair}
+#map.pick .leaflet-interactive{cursor:crosshair}
+.hs .an{min-height:36px;padding:4px 12px;flex:none}
+.gauge .needle.c{width:6px;transform:translateX(-3px)}
+.tbl .stick{position:sticky;left:0;background:var(--panel);z-index:1}
 </style>
 </head>
 <body>
@@ -774,6 +800,7 @@ canvas.chart.tall{height:320px}
   <button data-tab="riepilogo" class="on">Riepilogo</button>
   <button data-tab="corsa">Corsa</button>
   <button data-tab="velocita">Velocità</button>
+  <button data-tab="traccia">Posizione e velocità nel giro</button>
   <button data-tab="giro">Sag nel giro</button>
   <button data-tab="mappa">Mappa</button>
   <button data-tab="confronto">Confronto</button>
@@ -1098,11 +1125,11 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     return { cls: Math.abs(d) > 2 * t ? 'bad' : 'warn', testo: Math.abs(d) > 2 * t ? "Troppo carica sull'anteriore" : "Tende a caricare l'anteriore" };
   }
 
-  /* analisi completa di un segmento */
+  /* analisi completa di un segmento ('giri', 'intera', numero di giro, oppure maschera Uint8Array dei campioni) */
   function analyze(s, P0, seg) {
     const P = params(P0);
     const d = derived(s, P);
-    const m = mask(s, seg === undefined ? 'giri' : seg, P);
+    const m = seg instanceof Uint8Array ? seg : mask(s, seg === undefined ? 'giri' : seg, P);
     const deadW = P.soglia_ferma * P.rapporto;
     const F = posStats(s.front, m, P.corsaAnt, P.sagAnt, P.fondoPct, s.fs);
     const R = posStats(s.rear, m, P.corsaPost, P.sagPost, P.fondoPct, s.fs);
@@ -1232,8 +1259,200 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     return { x, fa, po, bil };
   }
 
+  /* traccia completa di un giro (o di un tratto x0..x1 in metri): posizione e velocità campione per campione */
+  function lapTrace(s, P0, lapN, x0, x1, monoStelo) {
+    let i0 = -1, i1 = -1;
+    for (let i = 0; i < s.n; i++) if (s.lap[i] === lapN) { if (i0 < 0) i0 = i; i1 = i; }
+    if (i0 < 0) return null;
+    return rangeTrace(s, P0, i0, i1, x0, x1, monoStelo);
+  }
+
+  /* come lapTrace, ma sui campioni i0..i1 (es. un passaggio in un tratto di pista); x = metri da i0 */
+  function rangeTrace(s, P0, i0, i1, x0, x1, monoStelo) {
+    const P = params(P0);
+    const d = derived(s, P);
+    const n = i1 - i0 + 1;
+    if (n < 2) return null;
+    // distanza interpolata tra un punto GPS e il successivo (il GPS aggiorna 10 volte al secondo)
+    const xs = new Float32Array(n);
+    const d0 = d.dist[i0];
+    let pa = 0, pv = 0;
+    for (let k = 1; k <= n; k++) {
+      const change = k === n || d.dist[i0 + k] !== d.dist[i0 + k - 1];
+      if (!change) continue;
+      const v = k === n ? pv : d.dist[i0 + k] - d0;
+      for (let j = pa; j < k; j++) xs[j] = pv + (v - pv) * (j - pa) / (k - pa);
+      pa = k; pv = v;
+    }
+    const len = xs[n - 1];
+    const lo = x0 === undefined || x0 === null ? -1 : x0, hi = x1 === undefined || x1 === null ? Infinity : x1;
+    const kf = monoStelo ? 1 / P.rapporto : 1;
+    const x = [], front = [], rear = [], vF = [], vR = [];
+    for (let k = 0; k < n; k++) {
+      if (xs[k] < lo || xs[k] > hi) continue;
+      const i = i0 + k;
+      x.push(xs[k]); front.push(s.front[i]); rear.push(s.rear[i] * kf);
+      vF.push(d.vFront[i]); vR.push(d.vRearShaft[i]);
+    }
+    const pstat = (a) => {
+      if (!a.length) return null;
+      let mx = 0, mn = 0, sum = 0;
+      for (let k = 0; k < a.length; k++) { if (a[k] > a[mx]) mx = k; if (a[k] < a[mn]) mn = k; sum += a[k]; }
+      return { max: a[mx], xMax: x[mx], min: a[mn], xMin: x[mn], media: sum / a.length, mediana: quantile(sortedOf(a), 0.5) };
+    };
+    const vstat = (a) => {
+      if (!a.length) return null;
+      let mx = 0, mn = 0; const c = [], r = [];
+      for (let k = 0; k < a.length; k++) {
+        if (a[k] > a[mx]) mx = k; if (a[k] < a[mn]) mn = k;
+        if (a[k] > P.soglia_ferma) c.push(a[k]); else if (a[k] < -P.soglia_ferma) r.push(-a[k]);
+      }
+      const mean = (q) => q.length ? q.reduce((u, w) => u + w, 0) / q.length : NaN;
+      return {
+        comp: { max: a[mx], xMax: x[mx], media: mean(c), mediana: quantile(sortedOf(c), 0.5), tempoPct: c.length / a.length * 100 },
+        rit: { max: -a[mn], xMax: x[mn], media: mean(r), mediana: quantile(sortedOf(r), 0.5), tempoPct: r.length / a.length * 100 },
+      };
+    };
+    return { x, front, rear, vF, vR, len, P,
+      stats: { front: pstat(front), rear: pstat(rear), vF: vstat(vF), vR: vstat(vR) } };
+  }
+
+  /* ------------------------------------------------- confronto e tratti di pista */
+  const MLAT = 111320;
+  // un punto per ogni fix GPS (il GPS aggiorna più lentamente dei sensori)
+  function fixIndices(s, i0, i1) {
+    const out = [];
+    let plat = NaN, plon = NaN;
+    for (let i = i0; i <= i1; i++) {
+      const la = s.lat[i], lo = s.lon[i];
+      if (!Number.isFinite(la) || !Number.isFinite(lo) || la === 0) continue;
+      if (la === plat && lo === plon) continue;
+      plat = la; plon = lo; out.push(i);
+    }
+    return out;
+  }
+  function lapRange(s, lapN) {
+    let i0 = -1, i1 = -1;
+    for (let i = 0; i < s.n; i++) if (s.lap[i] === lapN) { if (i0 < 0) i0 = i; i1 = i; }
+    return i0 < 0 ? null : [i0, i1];
+  }
+  /* fix GPS di un giro: lat, lon, d = metri dall'inizio del giro */
+  function lapFixes(s, P0, lapN) {
+    const r = lapRange(s, lapN);
+    if (!r) return [];
+    const d = derived(s, params(P0));
+    return fixIndices(s, r[0], r[1]).map((i) => ({ i, lat: s.lat[i], lon: s.lon[i], d: d.dist[i] - d.dist[r[0]] }));
+  }
+  /* direzione di marcia (gradi, 0 = nord) in un punto di una lista di fix:
+     misurata tra i punti ad almeno minM metri prima e dopo, così il rumore del GPS nelle curve lente pesa poco */
+  function headingOf(list, k, minM) {
+    minM = minM || 6;
+    const p = list[k];
+    if (!p) return NaN;
+    const mlon = MLAT * Math.cos(p.lat * Math.PI / 180);
+    const far = (q) => Math.hypot((q.lon - p.lon) * mlon, (q.lat - p.lat) * MLAT);
+    let a = k, b = k;
+    while (a > 0 && k - a < 80 && far(list[a]) < minM) a--;
+    while (b < list.length - 1 && b - k < 80 && far(list[b]) < minM) b++;
+    const A = list[a], B = list[b];
+    const dx = (B.lon - A.lon) * mlon, dy = (B.lat - A.lat) * MLAT, L = Math.hypot(dx, dy);
+    if (L < 2 || L > 120) return NaN;
+    return Math.atan2(dx, dy) * 180 / Math.PI;
+  }
+  function angDiff(a, b) { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
+
+  /* Allinea un giro di un'altra sessione al giro di riferimento. Per ogni fix GPS cerca il punto più vicino
+     del giro di riferimento, avanzando nel senso di marcia, e ritorna una funzione
+     "metri nel giro dell'altra sessione" -> "metri sul giro di riferimento".
+     Se le traiettorie non si sovrappongono (scarto medio > 15 m) scala in proporzione alla lunghezza. */
+  function alignLap(sRef, PRef, lapRef, s2, P2, lap2) {
+    const R = lapFixes(sRef, PRef, lapRef), O = lapFixes(s2, P2, lap2);
+    if (R.length < 5 || O.length < 5) return (x) => x;
+    const lenR = R[R.length - 1].d, lenO = O[O.length - 1].d;
+    const scale = (x) => (lenO > 0 ? x * lenR / lenO : x);
+    const mlon = MLAT * Math.cos(R[0].lat * Math.PI / 180);
+    const pairs = [];
+    let j = 0, sumErr = 0;
+    for (let k = 0; k < O.length; k++) {
+      const o = O[k];
+      let best = j, bd = Infinity;
+      const lo = Math.max(0, j - 10), hi = Math.min(R.length - 1, j + 80);
+      for (let t = lo; t <= hi; t++) {
+        const dx = (R[t].lon - o.lon) * mlon, dy = (R[t].lat - o.lat) * MLAT, dd = dx * dx + dy * dy;
+        if (dd < bd) { bd = dd; best = t; }
+      }
+      let dref = R[best].d, err = Math.sqrt(bd);
+      for (const t of [best - 1, best]) {
+        if (t < 0 || t + 1 >= R.length) continue;
+        const bx = (R[t + 1].lon - R[t].lon) * mlon, by = (R[t + 1].lat - R[t].lat) * MLAT;
+        const px = (o.lon - R[t].lon) * mlon, py = (o.lat - R[t].lat) * MLAT;
+        const L2 = bx * bx + by * by;
+        if (!L2) continue;
+        const u = Math.max(0, Math.min(1, (px * bx + py * by) / L2));
+        const e = Math.hypot(px - u * bx, py - u * by);
+        if (e <= err) { err = e; dref = R[t].d + u * (R[t + 1].d - R[t].d); }
+      }
+      if (pairs.length && dref < pairs[pairs.length - 1][1]) dref = pairs[pairs.length - 1][1];
+      pairs.push([o.d, dref]);
+      sumErr += err; j = best;
+    }
+    if (sumErr / O.length > 15) return scale;
+    return (x) => {
+      if (x <= pairs[0][0]) return pairs[0][1] + (x - pairs[0][0]);
+      const last = pairs[pairs.length - 1];
+      if (x >= last[0]) return last[1] + (x - last[0]);
+      let a = 0, b = pairs.length - 1;
+      while (b - a > 1) { const m = (a + b) >> 1; if (pairs[m][0] <= x) a = m; else b = m; }
+      const p = pairs[a], q = pairs[b];
+      return p[1] + (q[1] - p[1]) * (x - p[0]) / (q[0] - p[0] || 1);
+    };
+  }
+
+  /* Passaggi in un tratto di pista da A a B (A, B = {lat, lon, hd}: hd = direzione di marcia in gradi).
+     Per ogni passaggio vicino ad A nel senso di marcia cerca il successivo vicino a B, prima di ripassare da A.
+     refLen (m, facoltativo) scarta i passaggi di lunghezza molto diversa dal tratto di riferimento. */
+  function segmentPasses(s, P0, A, B, refLen) {
+    const P = params(P0);
+    const d = derived(s, P);
+    const fx = fixIndices(s, 0, s.n - 1).map((i) => ({ i, lat: s.lat[i], lon: s.lon[i] }));
+    if (fx.length < 8) return [];
+    const mlon = MLAT * Math.cos(A.lat * Math.PI / 180);
+    const dist = (p, Q) => Math.hypot((p.lat - Q.lat) * MLAT, (p.lon - Q.lon) * mlon);
+    // soglie con isteresi: un passaggio inizia sotto rIn metri dal punto e finisce oltre rOut,
+    // così il rumore del GPS al bordo non spezza un passaggio in più pezzi
+    const rIn = refLen ? Math.min(12, Math.max(5, refLen / 4)) : 12, rOut = rIn * 2 + 5;
+    const runs = (Q) => {
+      const out = [];
+      let k = 0;
+      while (k < fx.length) {
+        if (dist(fx[k], Q) < rIn) {
+          let best = k, bd = dist(fx[k], Q), e = k;
+          while (e < fx.length && dist(fx[e], Q) < rOut) { const dd = dist(fx[e], Q); if (dd < bd) { bd = dd; best = e; } e++; }
+          const hd = headingOf(fx, best);
+          if (!Number.isFinite(Q.hd) || !Number.isFinite(hd) || angDiff(hd, Q.hd) < 70) out.push(best);
+          k = e;
+        } else k++;
+      }
+      return out;
+    };
+    const as = runs(A), bs = runs(B);
+    const passes = [];
+    for (let q = 0; q < as.length; q++) {
+      const ka = as[q], nextA = q + 1 < as.length ? as[q + 1] : Infinity;
+      const kb = bs.find((k) => k > ka);
+      if (kb === undefined || kb > nextA) continue;
+      const i0 = fx[ka].i, i1 = fx[kb].i;
+      const len = d.dist[i1] - d.dist[i0];
+      if (!(len > 0)) continue;
+      if (refLen && (len < refLen * 0.5 || len > refLen * 1.8)) continue;
+      passes.push({ i0, i1, lap: s.lap[i0], len, dur: (i1 - i0) / s.fs });
+    }
+    return passes;
+  }
+
   const api = { parseRows, parseMotoklikDate, parseLapTime, analyze, lapTable, lapNumbers, mapPoints, hotspots,
-    sagTrace, params, DEFAULT_PARAMS, fmtTime, balanceLabel, num, deriv };
+    sagTrace, lapTrace, rangeTrace, lapFixes, fixIndices, headingOf, alignLap, segmentPasses,
+    params, DEFAULT_PARAMS, fmtTime, balanceLabel, num, deriv };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.PSTCore = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1297,7 +1516,8 @@ const DB = {
 const S = {
   tab: 'riepilogo', sessions: [], bikes: [], cur: null, curData: null, seg: 'giri',
   settings: { sogliaBil: 5, targetBil: 0, velMinKmh: 5, fondoPct: 3, soglia_ferma: 0.02 },
-  cmpIds: [], mapLayer: 'bil', mapLap: 'media', giroLap: null,
+  cmpIds: [], cmpLap: {}, mapLayer: 'bil', mapLap: 'media', giroLap: null, trZoom: 'all', trMono: 'ruota',
+  mapSeg: null, mapPick: 0, segA: null, mapView: null,
 };
 
 function bikeOf(sess) { return S.bikes.find((b) => b.id === (sess && sess.bikeId)) || null; }
@@ -1340,6 +1560,113 @@ function avgLap(s) {
   return t.length ? t.reduce((a, b) => a + b, 0) / t.length : NaN;
 }
 
+/* ------------------------------------------------- confronto tra sessioni */
+// dati grezzi delle sessioni caricate (quella aperta e quelle a confronto)
+const RAW = new Map();
+function rawOf(s) { return s ? RAW.get(s.id) || null : null; }
+async function loadRaw(id) {
+  if (RAW.has(id)) return RAW.get(id);
+  const sess = S.sessions.find((x) => x.id === id);
+  const d = await DB.get('data', id);
+  if (!d) return null;
+  const raw = { n: d.n, fs: d.fs, front: d.front, rear: d.rear, lap: d.lap, lat: d.lat, lon: d.lon, spe: d.spe, lapsHeader: d.lapsHeader || (sess && sess.laps) || [] };
+  RAW.set(id, raw);
+  return raw;
+}
+// da chiamare quando cambiano impostazioni, moto o setup
+function invalidate() { RAW.forEach((r) => { r._d = null; r._ana = null; r._lt = null; }); }
+// sessioni a confronto con quella aperta (in ordine di scelta)
+function cmpOthers() {
+  return S.cmpIds.filter((id) => !S.cur || id !== S.cur.id).map((id) => S.sessions.find((s) => s.id === id)).filter(Boolean);
+}
+function cmpOrder() { const ids = S.cur ? [S.cur.id] : []; S.cmpIds.forEach((id) => { if (!ids.includes(id)) ids.push(id); }); return ids; }
+function colorOf(id) { const i = cmpOrder().indexOf(id); return COLORS[(i < 0 ? 0 : i) % COLORS.length]; }
+function sessShort(s) {
+  const d = s.data ? s.data.split('-').reverse().slice(0, 2).join('/') : '';
+  const t = `${d} ${s.ora || ''}`.trim() || 'sessione ' + s.id;
+  const same = cmpOrder().map((id) => S.sessions.find((x) => x.id === id)).filter((x) => x && x.id !== s.id && x.data === s.data && x.ora === s.ora);
+  return same.length ? `${t} (#${s.id})` : t;
+}
+function dotLabel(s, extra) { return `<span class="dl"><span class="dot" style="background:${colorOf(s.id)}"></span>${esc(sessShort(s))}${extra ? ` <span class="muted">${extra}</span>` : ''}</span>`; }
+function saveCmp() { try { localStorage.setItem('pst-cmp', JSON.stringify({ ids: S.cmpIds, laps: S.cmpLap })); } catch (e) { /* */ } }
+function loadCmp() {
+  try {
+    const j = JSON.parse(localStorage.getItem('pst-cmp') || 'null');
+    if (j && Array.isArray(j.ids)) S.cmpIds = j.ids.filter((id) => S.sessions.some((s) => s.id === id));
+    if (j && j.laps) S.cmpLap = j.laps;
+  } catch (e) { /* */ }
+}
+// analisi memorizzata (si ricalcola solo se cambiano parametri o segmento)
+function anaOf(s, seg) {
+  const raw = rawOf(s);
+  if (!raw) return null;
+  const P = paramsFor(s), key = String(seg) + '|' + JSON.stringify(P);
+  if (!raw._ana) raw._ana = new Map();
+  if (!raw._ana.has(key)) raw._ana.set(key, C.analyze(raw, P, seg));
+  return raw._ana.get(key);
+}
+function ltOf(s) {
+  const raw = rawOf(s);
+  if (!raw) return [];
+  const key = JSON.stringify(paramsFor(s));
+  if (!raw._lt || raw._lt.key !== key) raw._lt = { key, v: C.lapTable(raw, paramsFor(s)) };
+  return raw._lt.v;
+}
+function bestLapN(s) {
+  const lt = ltOf(s);
+  return lt.length ? lt.reduce((a, b) => (b.tempo < a.tempo ? b : a)).giro : null;
+}
+// giro usato per una sessione a confronto quando serve un giro singolo (predefinito: il migliore)
+function cmpLapOf(s) {
+  const raw = rawOf(s);
+  if (!raw) return null;
+  const v = S.cmpLap[s.id];
+  return C.lapNumbers(raw).includes(v) ? v : bestLapN(s);
+}
+// segmento di analisi per una sessione: quella aperta usa la scelta in alto, le altre il loro giro se è scelto un giro
+function segFor(s) {
+  if (S.cur && s.id === S.cur.id) return S.seg;
+  if (typeof S.seg !== 'number') return S.seg;
+  const l = cmpLapOf(s);
+  return l === null ? 'intera' : l;   // sessione senza giri cronometrati: tutta la sessione
+}
+function cmpBar(opt) {
+  if (!S.cur) return '';
+  const others = cmpOthers();
+  if (!others.length) return `<div class="cmpbar"><button id="cmpAdd">+ Confronta con un'altra sessione</button></div>`;
+  const chips = others.map((s) => {
+    const raw = rawOf(s);
+    let sel = '';
+    if (opt && opt.lap && raw) {
+      const laps = C.lapNumbers(raw), cur = cmpLapOf(s), best = bestLapN(s);
+      if (laps.length) sel = `<select data-cmplap="${s.id}" aria-label="Giro">${laps.map((k) => `<option value="${k}" ${k === cur ? 'selected' : ''}>Giro ${k}${k === best ? ' (migliore)' : ''}</option>`).join('')}</select>`;
+    }
+    return `<span class="chip">${dotLabel(s)}${sel}<button data-cmprm="${s.id}" aria-label="Togli dal confronto">✕</button></span>`;
+  }).join('');
+  return `<div class="cmpbar"><span class="lbl">Confronto:</span><span class="chip main">${dotLabel(S.cur, 'aperta')}</span>${chips}<button id="cmpAdd">+ Sessione</button></div>`;
+}
+function bindCmpBar() {
+  const add = $('#cmpAdd');
+  if (add) add.onclick = cmpModal;
+  $$('[data-cmprm]').forEach((b) => b.onclick = () => { const id = +b.dataset.cmprm; S.cmpIds = S.cmpIds.filter((x) => x !== id); saveCmp(); render(); });
+  $$('[data-cmplap]').forEach((el) => el.onchange = () => { S.cmpLap[+el.dataset.cmplap] = +el.value; saveCmp(); render(); });
+}
+function cmpModal() {
+  const list = S.sessions.filter((s) => !S.cur || s.id !== S.cur.id).map((s) => `<label class="list-item" style="color:var(--fg);margin:0">
+      <input type="checkbox" data-pick="${s.id}" ${S.cmpIds.includes(s.id) ? 'checked' : ''}>
+      <div class="grow"><div class="t">${esc(sessTitle(s))}</div><div class="s">${esc((bikeOf(s) || {}).nome || '')} · migliore ${C.fmtTime(bestLap(s))} · ${esc(setupSummary(s.setup))}</div></div></label>`).join('');
+  modal(`<h2>Confronta con</h2>
+    <p class="muted" style="margin-top:-6px">Le sessioni scelte compaiono nei grafici e nelle tabelle di tutte le schede, ognuna con il suo colore.</p>
+    ${list || '<p class="muted">Non ci sono altre sessioni salvate.</p>'}
+    <div class="actions"><button onclick="closeModal()">Annulla</button><button class="primary" id="pickOk">Fatto</button></div>`);
+  $('#pickOk').onclick = () => {
+    const keepCur = S.cur && S.cmpIds.includes(S.cur.id) ? [S.cur.id] : [];
+    const picked = $$('[data-pick]').filter((c) => c.checked).map((c) => +c.dataset.pick);
+    S.cmpIds = keepCur.concat(S.cmpIds.filter((id) => picked.includes(id)), picked.filter((id) => !S.cmpIds.includes(id)));
+    saveCmp(); closeModal(); render();
+  };
+}
+
 /* -------------------------------------------------------------------- UI util */
 function toast(msg, ms = 2500) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast._h); toast._h = setTimeout(() => t.style.display = 'none', ms); }
 function spin(on, text) { $('#spinner').classList.toggle('show', !!on); if (text) $('#spinText').textContent = text; }
@@ -1372,7 +1699,19 @@ function chart(canvas, opt) {
   if (opt.xint) { xt = []; const st = Math.max(1, Math.ceil((xmax - xmin) / Math.max(3, Math.floor(W / 70)))); for (let v = Math.ceil(xmin); v <= xmax; v += st) xt.push(v); }
   const fy = opt.yfmt || ((v) => f(v, Math.abs(ymax - ymin) < 5 ? 1 : 0));
   const fx = opt.xfmt || ((v) => f(v, Math.abs(xmax - xmin) < 5 ? 1 : 0));
-  const L = Math.max(...yt.map((v) => g.measureText(fy(v)).width)) + 16, R = 12, T = opt.legend === false ? 10 : 30, B = opt.xlabel ? 40 : 26;
+  const L = Math.max(...yt.map((v) => g.measureText(fy(v)).width)) + 16, R = 12, B = opt.xlabel ? 40 : 26;
+  // legenda su più righe se non sta in una
+  const lgLines = [];
+  if (opt.legend !== false) {
+    let line = [], lw = 0;
+    series.filter((s) => s.name).forEach((s) => {
+      const w = g.measureText(s.name).width + 36;
+      if (line.length && lw + w > W - L - R) { lgLines.push(line); line = []; lw = 0; }
+      line.push(s); lw += w;
+    });
+    if (line.length) lgLines.push(line);
+  }
+  const T = opt.legend === false ? 10 : Math.max(30, 12 + lgLines.length * 18);
   const X = (v) => L + (v - xmin) / (xmax - xmin) * (W - L - R);
   const Y = (v) => T + (1 - (v - ymin) / (ymax - ymin)) * (H - T - B);
   g.strokeStyle = '#26303b'; g.fillStyle = '#93a0ad'; g.lineWidth = 1;
@@ -1387,6 +1726,17 @@ function chart(canvas, opt) {
   series.forEach((s) => {
     g.strokeStyle = s.color; g.lineWidth = s.width || 2; g.lineJoin = 'round'; g.lineCap = 'round';
     g.setLineDash(s.dash ? [6, 5] : []);
+    if (s.sign) {   // due colori: sopra e sotto lo zero
+      const y0 = Y(0);
+      [[s.sign[0], T, y0 - T], [s.sign[1], y0, H - B - y0]].forEach(([col, top, hh]) => {
+        if (hh <= 0) return;
+        g.save(); g.beginPath(); g.rect(L, top, W - L - R, hh); g.clip();
+        g.strokeStyle = col; g.beginPath();
+        for (let i = 0; i < s.x.length; i++) { const px = X(s.x[i]), py = Y(s.y[i]); if (i === 0) g.moveTo(px, py); else g.lineTo(px, py); }
+        g.stroke(); g.restore();
+      });
+      return;
+    }
     g.beginPath(); let pen = false;
     for (let i = 0; i < s.x.length; i++) {
       const y = s.y[i];
@@ -1397,9 +1747,31 @@ function chart(canvas, opt) {
     g.stroke();
   });
   g.restore(); g.setLineDash([]);
+  (opt.marks || []).forEach((m) => {
+    if (!(m.x >= xmin && m.x <= xmax)) return;
+    const px = X(m.x), py = Y(m.y);
+    g.fillStyle = m.color || '#fff'; g.strokeStyle = '#0d1116'; g.lineWidth = 2;
+    g.beginPath(); g.arc(px, py, 6, 0, Math.PI * 2); g.fill(); g.stroke();
+    if (m.label) {
+      const tw = g.measureText(m.label).width + 10, below = m.below;
+      let bx = px + 9; if (bx + tw > W - R) bx = px - tw - 9;
+      let by = below ? py + 6 : py - 22; by = Math.max(T, Math.min(H - B - 18, by));
+      g.fillStyle = '#0d1116dd'; g.fillRect(bx, by, tw, 18);
+      g.fillStyle = m.color || '#fff'; g.textAlign = 'left'; g.fillText(m.label, bx + 5, by + 13);
+    }
+  });
   if (opt.legend !== false) {
-    let lx = L; g.textAlign = 'left';
-    series.forEach((s) => { if (!s.name) return; g.fillStyle = s.color; g.fillRect(lx, 10, 14, 4); g.fillStyle = '#c9d3dd'; g.fillText(s.name, lx + 18, 16); lx += g.measureText(s.name).width + 36; });
+    g.textAlign = 'left';
+    lgLines.forEach((line, li) => {
+      let lx = L;
+      const y = 10 + li * 18;
+      line.forEach((s) => {
+        g.strokeStyle = s.color; g.lineWidth = 3; g.setLineDash(s.dash ? [5, 3] : []);
+        g.beginPath(); g.moveTo(lx, y + 2); g.lineTo(lx + 14, y + 2); g.stroke(); g.setLineDash([]);
+        g.fillStyle = '#c9d3dd'; g.fillText(s.name, lx + 18, y + 6);
+        lx += g.measureText(s.name).width + 36;
+      });
+    });
   }
   // tocco: valore più vicino
   canvas.onpointerdown = canvas.onpointermove = (e) => {
@@ -1534,8 +1906,7 @@ function bikeForm(bike, done, onCancel) {
       rapporto: +v('rapporto') || 3, sagAnt: v('sagAnt') ? +v('sagAnt') : '', sagPost: v('sagPost') ? +v('sagPost') : '' });
     const id = await DB.put('bikes', nb); nb.id = id;
     await refreshLists();
-    if (S.curData) S.curData._d = null;
-    CMP_CACHE.clear();
+    invalidate();
     if (done) done(nb); else { closeModal(); render(); }
   };
 }
@@ -1549,9 +1920,16 @@ async function refreshLists() {
 async function openSession(id) {
   const sess = S.sessions.find((s) => s.id === id);
   if (!sess) return;
-  const d = await DB.get('data', id);
+  const raw = await loadRaw(id);
+  if (!raw) return;
+  if (!S.cur || S.cur.id !== id) S.mapView = null;
+  // aprendo una sessione che era a confronto, quella aperta prima prende il suo posto nel confronto
+  if (S.cur && S.cur.id !== id && S.cmpIds.includes(id) && !S.cmpIds.includes(S.cur.id)) {
+    S.cmpIds = S.cmpIds.map((x) => (x === id ? S.cur.id : x));
+    saveCmp();
+  }
   S.cur = sess;
-  S.curData = { n: d.n, fs: d.fs, front: d.front, rear: d.rear, lap: d.lap, lat: d.lat, lon: d.lon, spe: d.spe, lapsHeader: d.lapsHeader || sess.laps || [] };
+  S.curData = raw;
   S.giroLap = null;
   try { localStorage.setItem('pst-last', String(id)); } catch (e) { /* */ }
   $('#sessLabel').textContent = `${sessTitle(sess)} · ${(bikeOf(sess) || {}).nome || ''} · ${setupSummary(sess.setup)}`;
@@ -1571,8 +1949,9 @@ function sessionsModal() {
     const s = S.sessions.find((x) => x.id === +b.dataset.del);
     if (!confirm(`Eliminare la sessione ${sessTitle(s)}?`)) return;
     await DB.del('sessions', s.id); await DB.del('data', s.id);
+    RAW.delete(s.id);
     if (S.cur && S.cur.id === s.id) { S.cur = null; S.curData = null; $('#sessLabel').textContent = 'Nessuna sessione aperta'; }
-    S.cmpIds = S.cmpIds.filter((x) => x !== s.id);
+    S.cmpIds = S.cmpIds.filter((x) => x !== s.id); saveCmp();
     await refreshLists(); sessionsModal(); render();
   });
 }
@@ -1605,7 +1984,7 @@ function settingsModal() {
     const r = $('#setForm');
     ['sogliaBil', 'targetBil', 'velMinKmh', 'fondoPct'].forEach((k) => { const v = C.num(r.querySelector(`[name=${k}]`).value); if (Number.isFinite(v)) S.settings[k] = v; });
     await DB.put('kv', { k: 'settings', v: S.settings });
-    if (S.curData) S.curData._d = null;
+    invalidate();
     closeModal(); render();
   };
   $('#bkExport').onclick = exportBackup;
@@ -1639,7 +2018,10 @@ async function importBackup(file) {
     for (const s of j.sessions || []) await DB.put('sessions', s);
     for (const d of j.arrays || []) await DB.put('data', { id: d.id, n: d.n, fs: d.fs, lapsHeader: d.lapsHeader, front: unb64(d.front, Float32Array), rear: unb64(d.rear, Float32Array), lap: unb64(d.lap, Int16Array), lat: unb64(d.lat, Float64Array), lon: unb64(d.lon, Float64Array), spe: unb64(d.spe, Float32Array) });
     if (j.settings) { S.settings = Object.assign(S.settings, j.settings); await DB.put('kv', { k: 'settings', v: S.settings }); }
-    await refreshLists(); closeModal(); render(); toast('Backup importato');
+    RAW.clear();
+    await refreshLists();
+    if (S.cur) { const id = S.cur.id; S.cur = null; S.curData = null; await openSession(id); }
+    closeModal(); render(); toast('Backup importato');
   } catch (e) { alert('Backup non valido: ' + e.message); }
   spin(false);
 }
@@ -1666,24 +2048,48 @@ function bindSeg() { const el = $('#segSel'); if (el) el.onchange = () => { S.se
 function render() {
   $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === S.tab));
   const v = $('#view');
+  // prima carico i dati delle sessioni a confronto
+  const missing = (S.tab === 'confronto' ? S.cmpIds.map((id) => S.sessions.find((s) => s.id === id)).filter(Boolean) : cmpOthers()).filter((s) => !RAW.has(s.id));
+  if (missing.length) {
+    spin(true, 'Carico le sessioni a confronto…');
+    Promise.all(missing.map((s) => loadRaw(s.id)))
+      .then(() => { spin(false); S.cmpIds = S.cmpIds.filter((id) => RAW.has(id) || !missing.some((s) => s.id === id)); render(); })
+      .catch((e) => { spin(false); console.error(e); toast('Non riesco a caricare una sessione a confronto'); S.cmpIds = S.cmpIds.filter((id) => !missing.some((s) => s.id === id)); render(); });
+    return;
+  }
   try {
     if (S.tab === 'confronto') { v.innerHTML = viewConfronto(); afterConfronto(); return; }
     if (!S.cur) { v.innerHTML = needSession(); return; }
-    const fn = { riepilogo: viewRiepilogo, corsa: viewCorsa, velocita: viewVelocita, giro: viewGiro, mappa: viewMappa, setup: viewSetup }[S.tab];
+    const fn = { riepilogo: viewRiepilogo, corsa: viewCorsa, velocita: viewVelocita, giro: viewGiro, traccia: viewTraccia, mappa: viewMappa, setup: viewSetup }[S.tab];
     v.innerHTML = fn();
     bindSeg();
-    const after = { corsa: afterCorsa, velocita: afterVelocita, giro: afterGiro, mappa: afterMappa, setup: afterSetup, riepilogo: afterRiepilogo }[S.tab];
+    bindCmpBar();
+    const after = { corsa: afterCorsa, velocita: afterVelocita, giro: afterGiro, traccia: afterTraccia, mappa: afterMappa, setup: afterSetup, riepilogo: afterRiepilogo }[S.tab];
     if (after) after();
   } catch (e) { console.error(e); v.innerHTML = `<div class="card bad">Errore: ${esc(e.message)}</div>`; }
 }
 
-function analysis(seg) { const P = paramsFor(S.cur); return { P, a: C.analyze(S.curData, P, seg === undefined ? S.seg : seg) }; }
+function analysis(seg) { const P = paramsFor(S.cur); return { P, a: anaOf(S.cur, seg === undefined ? S.seg : seg) }; }
+// sessione aperta + sessioni a confronto, ciascuna con la sua analisi
+function cmpSet() {
+  return [S.cur].concat(cmpOthers()).filter((s) => rawOf(s)).map((s) => {
+    const seg = segFor(s);
+    return { s, P: paramsFor(s), a: anaOf(s, seg), seg, cur: s.id === S.cur.id };
+  });
+}
+function segNote(set) {
+  if (set.length < 2) return '';
+  const lapPart = set.filter((x) => !x.cur && typeof x.seg === 'number').map((x) => `${esc(sessShort(x.s))} giro ${x.seg}`);
+  return lapPart.length ? `<p class="note muted" style="margin:-6px 0 10px">Sessioni a confronto sul giro scelto accanto al nome: ${lapPart.join(', ')}.</p>` : '';
+}
 
 /* --- riepilogo */
-function gauge(bil, P) {
+function gauge(bil, P, more) {
   const span = Math.max(20, P.sogliaBil * 4), pos = (x) => Math.max(0, Math.min(100, (x + span) / (2 * span) * 100));
+  const needles = more ? more.filter((m) => Number.isFinite(m.bil)).map((m) => `<div class="needle c" style="left:${pos(m.bil)}%;background:${m.color}"></div>`).join('')
+    : `<div class="needle" style="left:${pos(bil)}%"></div>`;
   return `<div class="gauge"><div class="ok-zone" style="left:${pos(P.targetBil - P.sogliaBil)}%;right:${100 - pos(P.targetBil + P.sogliaBil)}%"></div>
-    <div class="needle" style="left:${pos(bil)}%"></div></div>
+    ${needles}</div>
     <div class="gauge-l"><span>← carica anteriore</span><span>bilanciata</span><span>carica posteriore →</span></div>`;
 }
 function velTable(a) {
@@ -1691,16 +2097,61 @@ function velTable(a) {
   return `<table class="tbl"><tr><th></th><th>Comp. media</th><th>Comp. max</th><th>Rit. media</th><th>Rit. max</th></tr>
     ${row('Forcella', a.velAnt)}${row('Mono (stelo)', a.velPostStelo)}${row('Mono (ruota)', a.velPostRuota)}</table>`;
 }
+function lapRows(lt, best) {
+  return lt.map((l) => `<tr class="${l.tempo === best ? 'best' : ''}"><td>${l.giro}</td><td>${C.fmtTime(l.tempo)}</td><td>${f(l.velMedia, 1)}</td>
+      <td class="${l.a.bilanciamentoTesto.cls}">${f(l.a.bilanciamento, 1, true)}</td><td>${f(l.a.front.scartoSag, 1, true)}</td><td>${f(l.a.rear.scartoSag, 1, true)}</td>
+      <td>${f(l.a.velAnt.comp.max, 2)}</td><td>${f(l.a.velPostStelo.comp.max, 2)}</td><td>${l.a.front.fondo} / ${l.a.rear.fondo}</td></tr>`).join('');
+}
+const LAP_HEAD = '<tr><th>Giro</th><th>Tempo</th><th>km/h</th><th>Bilanc.</th><th>Sag forc.</th><th>Sag mono</th><th>Forc. v comp max</th><th>Mono v comp max</th><th>Fondo F/M</th></tr>';
+function viewRiepilogoCmp(set) {
+  const P = set[0].P;
+  const lbl = (x) => `<td>${dotLabel(x.s, typeof x.seg === 'number' ? 'giro ' + x.seg : '')}</td>`;
+  const VK = [['velAnt', 'Forcella'], ['velPostStelo', 'Mono (stelo)'], ['velPostRuota', 'Mono (ruota)']];
+  const gsep = 'border-left:1px solid var(--line)';
+  const velHead = `<tr><th class="stick"></th>${VK.map(([, n]) => `<th colspan="4" style="text-align:center;${gsep}">${n}</th>`).join('')}</tr>
+    <tr><th class="stick"></th>${VK.map(() => `<th style="${gsep}">C. media</th><th>C. max</th><th>R. media</th><th>R. max</th>`).join('')}</tr>`;
+  const velBody = set.map((x) => `<tr>${lbl(x).replace('<td>', '<td class="stick">')}${VK.map(([k]) => `<td style="${gsep}">${f(x.a[k].comp.media, 2)}</td><td>${f(x.a[k].comp.max, 2)}</td><td>${f(x.a[k].rit.media, 2)}</td><td>${f(x.a[k].rit.max, 2)}</td>`).join('')}</tr>`).join('');
+  return `${segSelect()}${cmpBar({ lap: typeof S.seg === 'number' })}${segNote(set)}
+  <div class="grid">
+    <div class="card"><h3>Bilanciamento</h3>
+      ${gauge(0, P, set.map((x) => ({ bil: x.a.bilanciamento, color: colorOf(x.s.id) })))}
+      <table class="tbl" style="margin-top:12px">${set.map((x) => `<tr>${lbl(x)}<td class="${x.a.bilanciamentoTesto.cls}" style="white-space:normal">${f(x.a.bilanciamento, 1, true)} · ${esc(x.a.bilanciamentoTesto.testo)}</td></tr>`).join('')}</table>
+      <p class="note">Punti = posteriore − anteriore, scarto dal race sag in % della corsa.</p>
+    </div>
+    <div class="card"><h3>Distanza dal race sag</h3><div class="scroll">
+      <table class="tbl"><tr><th></th><th>Forcella</th><th>Mono (ruota)</th></tr>
+      ${set.map((x) => `<tr>${lbl(x)}<td class="${Math.abs(x.a.front.scartoSag) > 15 ? 'warn' : ''}">${f(x.a.front.scartoSag, 1, true)} mm</td><td class="${Math.abs(x.a.rear.scartoSag) > 15 ? 'warn' : ''}">${f(x.a.rear.scartoSag, 1, true)} mm</td></tr>
+        <tr><td class="muted" style="font-size:12.5px;padding-top:0">media / race sag</td><td class="muted" style="font-size:12.5px;padding-top:0">${f(x.a.front.media, 0)} / ${f(x.P.sagAnt, 0)}</td><td class="muted" style="font-size:12.5px;padding-top:0">${f(x.a.rear.media, 0)} / ${f(x.P.sagPost, 0)}</td></tr>`).join('')}
+      </table></div>
+      <p class="note">Positivo = lavora più affondata del race sag.</p>
+    </div>
+    <div class="card"><h3>Uso della corsa</h3><div class="scroll">
+      <table class="tbl"><tr><th></th><th style="white-space:normal">Forc. 95°<br>/ max</th><th style="white-space:normal">Mono 95°<br>/ max</th><th style="white-space:normal">Fondo<br>F / M</th></tr>
+      ${set.map((x) => `<tr>${lbl(x)}<td>${f(x.a.front.p95, 0)} / ${f(x.a.front.max, 0)}</td><td>${f(x.a.rear.p95, 0)} / ${f(x.a.rear.max, 0)}</td><td>${x.a.front.fondo} / ${x.a.rear.fondo}</td></tr>`).join('')}
+      </table></div>
+      <canvas class="chart" id="cBands" style="height:220px;margin-top:10px"></canvas>
+      <p class="note">Tabella in mm (mono alla ruota). Grafico: linea continua = forcella, tratteggiata = mono.</p>
+    </div>
+  </div>
+  <div class="card" style="margin-top:12px"><h3>Velocità (m/s)</h3><div class="scroll"><table class="tbl">${velHead}${velBody}</table></div>
+    <p class="note">C = compressione, R = ritorno. Max = 99,5° percentile (esclude i picchi isolati).</p></div>
+  <div class="card" style="margin-top:12px"><h3>Giri</h3><div class="scroll">
+    <table class="tbl">${LAP_HEAD}
+    ${set.map((x) => { const lt = ltOf(x.s); const best = Math.min(...lt.map((l) => l.tempo)); return `<tr class="sec"><td colspan="9" style="padding-top:12px">${dotLabel(x.s, esc(x.s.pista || ''))}</td></tr>${lapRows(lt, best)}`; }).join('')}
+    </table></div></div>`;
+}
 function viewRiepilogo() {
+  const set = cmpSet();
+  if (set.length > 1) return viewRiepilogoCmp(set);
   const { P, a } = analysis();
-  const lt = C.lapTable(S.curData, P);
+  const lt = ltOf(S.cur);
   const best = Math.min(...lt.map((l) => l.tempo));
   const b = a.bilanciamentoTesto;
   const warnSag = sagIsDefault(S.cur) ? `<p class="note warn">Race sag non impostato: uso ${f(P.sagAnt, 0)} / ${f(P.sagPost, 0)} mm. Impostalo in Setup per un bilanciamento corretto.</p>` : '';
   const sagBox = (name, x, sag, travel) => `<div><div class="muted">${name}</div>
     <div class="mid ${Math.abs(x.scartoSag) > 15 ? 'warn' : ''}">${f(x.scartoSag, 1, true)} mm</div>
     <div class="muted" style="font-size:13px">media ${f(x.media, 0)} mm su race sag ${f(sag, 0)} mm · sopra il sag ${f(x.sopraSagPct, 0)}% del tempo</div></div>`;
-  return `${segSelect()}
+  return `${segSelect()}${cmpBar()}
   <div class="grid">
     <div class="card"><h3>Bilanciamento</h3>
       <div class="big ${b.cls}">${esc(b.testo)}</div>
@@ -1728,24 +2179,39 @@ function viewRiepilogo() {
     </div>
   </div>
   <div class="card" style="margin-top:12px"><h3>Giri</h3><div class="scroll">
-    <table class="tbl"><tr><th>Giro</th><th>Tempo</th><th>km/h</th><th>Bilanc.</th><th>Sag forc.</th><th>Sag mono</th><th>Forc. v comp max</th><th>Mono v comp max</th><th>Fondo F/M</th></tr>
-    ${lt.map((l) => `<tr class="${l.tempo === best ? 'best' : ''}"><td>${l.giro}</td><td>${C.fmtTime(l.tempo)}</td><td>${f(l.velMedia, 1)}</td>
-      <td class="${l.a.bilanciamentoTesto.cls}">${f(l.a.bilanciamento, 1, true)}</td><td>${f(l.a.front.scartoSag, 1, true)}</td><td>${f(l.a.rear.scartoSag, 1, true)}</td>
-      <td>${f(l.a.velAnt.comp.max, 2)}</td><td>${f(l.a.velPostStelo.comp.max, 2)}</td><td>${l.a.front.fondo} / ${l.a.rear.fondo}</td></tr>`).join('')}
+    <table class="tbl">${LAP_HEAD}
+    ${lapRows(lt, best)}
     </table></div></div>`;
 }
 function afterRiepilogo() {
-  const { a } = analysis();
+  const set = cmpSet();
   const x = Array.from({ length: 10 }, (_, i) => i * 10 + 5);
-  chart($('#cBands'), { series: [{ name: 'Forcella', x, y: a.bandeAnt.pct, color: COLORS[0] }, { name: 'Mono', x, y: a.bandePost.pct, color: COLORS[1] }],
-    xmin: 0, xmax: 100, xlabel: '% della corsa', xunit: '% corsa', yunit: '% tempo', tipfmt: (v) => f(v, 1) });
+  const series = set.length > 1
+    ? set.flatMap((c) => [{ name: 'Forc. ' + sessShort(c.s), x, y: c.a.bandeAnt.pct, color: colorOf(c.s.id) }, { name: 'Mono ' + sessShort(c.s), x, y: c.a.bandePost.pct, color: colorOf(c.s.id), dash: true }])
+    : [{ name: 'Forcella', x, y: set[0].a.bandeAnt.pct, color: COLORS[0] }, { name: 'Mono', x, y: set[0].a.bandePost.pct, color: COLORS[1] }];
+  chart($('#cBands'), { series, xmin: 0, xmax: 100, xlabel: '% della corsa', xunit: '% corsa', yunit: '% tempo', tipfmt: (v) => f(v, 1) });
 }
 
 /* --- corsa */
+function viewCorsaCmp(set) {
+  const N = set.length;
+  const head = set.map((x) => `<th>${dotLabel(x.s)}</th>`).join('');
+  const rows = Array.from({ length: 10 }, (_, i) => `<tr><td>${i * 10}–${i * 10 + 10}%</td>${set.map((x) => `<td>${f(x.a.bandeAnt.pct[i], 1)}</td>`).join('')}${set.map((x) => `<td>${f(x.a.bandePost.pct[i], 1)}</td>`).join('')}</tr>`).join('');
+  return `${segSelect()}${cmpBar({ lap: typeof S.seg === 'number' })}${segNote(set)}<div class="grid2">
+    <div class="card"><h3>Forcella: tempo per posizione</h3><canvas class="chart" id="cPosF"></canvas><p class="note">Linee verticali tratteggiate = race sag di ogni sessione.</p></div>
+    <div class="card"><h3>Mono (ruota): tempo per posizione</h3><canvas class="chart" id="cPosR"></canvas><p class="note">Linee verticali tratteggiate = race sag di ogni sessione.</p></div>
+  </div>
+  <div class="card" style="margin-top:12px"><h3>Percentuale di tempo per fascia di corsa</h3><div class="scroll">
+    <table class="tbl"><tr><th></th><th colspan="${N}" style="text-align:center">Forcella % tempo</th><th colspan="${N}" style="text-align:center">Mono % tempo</th></tr>
+    <tr><th>Fascia</th>${head}${head}</tr>${rows}</table></div>
+    <p class="note">Fasce in % della corsa di ogni moto. Corse: ${set.map((x) => `${esc(sessShort(x.s))} ${f(x.P.corsaAnt, 0)} / ${f(x.P.corsaPost, 0)} mm`).join(' · ')}.</p></div>`;
+}
 function viewCorsa() {
+  const set = cmpSet();
+  if (set.length > 1) return viewCorsaCmp(set);
   const { P, a } = analysis();
   const rows = a.bandeAnt.pct.map((v, i) => `<tr><td>${i * 10}–${i * 10 + 10}%</td><td>${f(i * P.corsaAnt / 10, 0)}–${f((i + 1) * P.corsaAnt / 10, 0)}</td><td>${f(v, 1)}</td><td>${f(i * P.corsaPost / 10, 0)}–${f((i + 1) * P.corsaPost / 10, 0)}</td><td>${f(a.bandePost.pct[i], 1)}</td></tr>`).join('');
-  return `${segSelect()}<div class="grid2">
+  return `${segSelect()}${cmpBar()}<div class="grid2">
     <div class="card"><h3>Forcella: tempo per posizione</h3><canvas class="chart" id="cPosF"></canvas><p class="note">Linea tratteggiata = race sag (${f(P.sagAnt, 0)} mm).</p></div>
     <div class="card"><h3>Mono (ruota): tempo per posizione</h3><canvas class="chart" id="cPosR"></canvas><p class="note">Linea tratteggiata = race sag (${f(P.sagPost, 0)} mm).</p></div>
   </div>
@@ -1754,8 +2220,19 @@ function viewCorsa() {
     <p class="note">Corse: forcella ${f(P.corsaAnt, 0)} mm, ruota posteriore ${f(P.corsaPost, 0)} mm.</p></div>`;
 }
 function afterCorsa() {
-  const { P, a } = analysis();
+  const set = cmpSet();
   const xs = (arr) => arr.map((_, i) => i * 10 + 5);
+  if (set.length > 1) {
+    const one = (id, key, sagK, travK) => chart($(id), {
+      series: set.map((c) => ({ name: sessShort(c.s), x: xs(c.a[key].mm), y: c.a[key].mm, color: colorOf(c.s.id) })),
+      xmin: 0, xmax: Math.max(...set.map((c) => c.P[travK])),
+      vlines: set.map((c) => ({ x: c.P[sagK], color: colorOf(c.s.id) })),
+      xlabel: 'posizione (mm)', xunit: ' mm', yunit: '% tempo', tipfmt: (v) => f(v, 1) });
+    one('#cPosF', 'bandeAnt', 'sagAnt', 'corsaAnt');
+    one('#cPosR', 'bandePost', 'sagPost', 'corsaPost');
+    return;
+  }
+  const { P, a } = analysis();
   chart($('#cPosF'), { series: [{ name: 'Forcella', x: xs(a.bandeAnt.mm), y: a.bandeAnt.mm, color: COLORS[0] }], xmin: 0, xmax: P.corsaAnt,
     vlines: [{ x: P.sagAnt, label: 'race sag' }], xlabel: 'posizione (mm)', xunit: ' mm', yunit: '% tempo', tipfmt: (v) => f(v, 1) });
   chart($('#cPosR'), { series: [{ name: 'Mono (ruota)', x: xs(a.bandePost.mm), y: a.bandePost.mm, color: COLORS[1] }], xmin: 0, xmax: P.corsaPost,
@@ -1763,10 +2240,24 @@ function afterCorsa() {
 }
 
 /* --- velocità */
+function viewVelocitaCmp(set) {
+  const grp = (name, key) => ['comp', 'rit'].map((k) => `<tr><td colspan="6" style="color:var(--muted);padding-top:12px">${name} · ${k === 'comp' ? 'compressione' : 'ritorno'}</td></tr>` +
+    set.map((x) => { const v = x.a[key][k]; return `<tr><td>${dotLabel(x.s, typeof x.seg === 'number' ? 'giro ' + x.seg : '')}</td><td>${f(v.media, 2)}</td><td>${f(v.p50, 2)}</td><td>${f(v.p95, 2)}</td><td>${f(v.max, 2)}</td><td>${f(v.picco, 2)}</td></tr>`; }).join('')).join('');
+  return `${segSelect()}${cmpBar({ lap: typeof S.seg === 'number' })}${segNote(set)}<div class="card"><h3>Velocità degli steli (m/s)</h3><div class="scroll"><table class="tbl">
+    <tr><th></th><th>Media</th><th>Mediana</th><th>95°</th><th>Max (99,5°)</th><th>Picco</th></tr>
+    ${grp('Forcella', 'velAnt')}${grp('Mono (stelo)', 'velPostStelo')}${grp('Mono (ruota)', 'velPostRuota')}</table></div>
+    <p class="note">Velocità calcolate dalla posizione (filtro su 40 ms). Mono stelo = ruota / rapporto di leva della moto di ogni sessione.</p></div>
+  <div class="grid2" style="margin-top:12px">
+    <div class="card"><h3>Forcella: distribuzione velocità</h3><canvas class="chart tall" id="cVF"></canvas><p class="note">Linea continua = compressione, tratteggiata = ritorno.</p></div>
+    <div class="card"><h3>Mono (stelo): distribuzione velocità</h3><canvas class="chart tall" id="cVR"></canvas><p class="note">Linea continua = compressione, tratteggiata = ritorno.</p></div>
+  </div>`;
+}
 function viewVelocita() {
+  const set = cmpSet();
+  if (set.length > 1) return viewVelocitaCmp(set);
   const { a } = analysis();
   const row = (name, v) => ['comp', 'rit'].map((k) => `<tr><td>${name}</td><td>${k === 'comp' ? 'compressione' : 'ritorno'}</td><td>${f(v[k].media, 2)}</td><td>${f(v[k].p50, 2)}</td><td>${f(v[k].p95, 2)}</td><td>${f(v[k].max, 2)}</td><td>${f(v[k].picco, 2)}</td></tr>`).join('');
-  return `${segSelect()}<div class="card"><h3>Velocità degli steli (m/s)</h3><div class="scroll"><table class="tbl">
+  return `${segSelect()}${cmpBar()}<div class="card"><h3>Velocità degli steli (m/s)</h3><div class="scroll"><table class="tbl">
     <tr><th></th><th></th><th>Media</th><th>Mediana</th><th>95°</th><th>Max (99,5°)</th><th>Picco</th></tr>
     ${row('Forcella', a.velAnt)}${row('Mono (stelo)', a.velPostStelo)}${row('Mono (ruota)', a.velPostRuota)}</table></div>
     <p class="note">Velocità calcolate dalla posizione (filtro su 40 ms). Mono stelo = ruota / rapporto di leva ${f(a.P.rapporto, 2)}:1.</p></div>
@@ -1776,26 +2267,132 @@ function viewVelocita() {
   </div>`;
 }
 function afterVelocita() {
-  const { a } = analysis();
   const mk = (h) => h.comp.map((_, i) => (i + 0.5) * h.bin);
   const cut = (h) => { let last = 0; h.comp.forEach((v, i) => { if (v > 0.05 || h.rit[i] > 0.05) last = i; }); return (last + 1) * h.bin; };
+  const set = cmpSet();
+  if (set.length > 1) {
+    const one = (id, key, d) => chart($(id), {
+      series: set.flatMap((c) => [{ name: sessShort(c.s) + ' comp.', x: mk(c.a[key]), y: c.a[key].comp, color: colorOf(c.s.id) }, { name: sessShort(c.s) + ' rit.', x: mk(c.a[key]), y: c.a[key].rit, color: colorOf(c.s.id), dash: true }]),
+      xmin: 0, xmax: Math.max(...set.map((c) => cut(c.a[key]))), xlabel: 'velocità stelo (m/s)', xfmt: (v) => f(v, d), xunit: ' m/s', yunit: '% tempo', tipfmt: (v) => f(v, 1) });
+    one('#cVF', 'istVelAnt', 1);
+    one('#cVR', 'istVelPost', 2);
+    return;
+  }
+  const { a } = analysis();
   chart($('#cVF'), { series: [{ name: 'Compressione', x: mk(a.istVelAnt), y: a.istVelAnt.comp, color: COLORS[1] }, { name: 'Ritorno', x: mk(a.istVelAnt), y: a.istVelAnt.rit, color: COLORS[0] }],
     xmin: 0, xmax: cut(a.istVelAnt), xlabel: 'velocità stelo (m/s)', xfmt: (v) => f(v, 1), xunit: ' m/s', yunit: '% tempo', tipfmt: (v) => f(v, 1) });
   chart($('#cVR'), { series: [{ name: 'Compressione', x: mk(a.istVelPost), y: a.istVelPost.comp, color: COLORS[1] }, { name: 'Ritorno', x: mk(a.istVelPost), y: a.istVelPost.rit, color: COLORS[0] }],
     xmin: 0, xmax: cut(a.istVelPost), xlabel: 'velocità stelo (m/s)', xfmt: (v) => f(v, 2), xunit: ' m/s', yunit: '% tempo', tipfmt: (v) => f(v, 1) });
 }
 
+/* --- posizione e velocità nel giro */
+const ST_COL = { max: '#ffffff', min: '#9aa7b4', media: '#ffb347', mediana: '#5bd27c', sag: '#b48cff', comp: '#ff6b6b', rit: '#4ea1ff' };
+function trData() {
+  const P = paramsFor(S.cur);
+  const z = S.trZoom === 'all' ? [null, null] : [+S.trZoom, +S.trZoom + 250];
+  return C.lapTrace(S.curData, P, S.giroLap, z[0], z[1], S.trMono === 'stelo');
+}
+function viewTraccia() {
+  const laps = C.lapNumbers(S.curData);
+  if (!laps.length) return '<div class="card">La sessione non ha giri marcati.</div>';
+  if (!laps.includes(S.giroLap)) S.giroLap = bestLapN(S.cur);
+  const full = C.lapTrace(S.curData, paramsFor(S.cur), S.giroLap);
+  const zs = []; for (let a = 0; a < full.len; a += 250) zs.push(a);
+  if (S.trZoom !== 'all' && !zs.includes(+S.trZoom)) S.trZoom = 'all';
+  const card = (id, title) => `<div class="card" style="margin-top:12px"><h3>${title}</h3><div class="legend" id="${id}L" style="margin:0 0 6px;font-size:13.5px;color:var(--fg)"></div><canvas class="chart tall" id="${id}"></canvas></div>`;
+  const ref = S.trMono === 'stelo' ? 'stelo' : 'ruota';
+  return `<div class="seg">
+    <select id="trLap">${laps.map((k) => `<option value="${k}" ${k === S.giroLap ? 'selected' : ''}>Giro ${k}</option>`).join('')}</select>
+    <select id="trZoom"><option value="all">Giro intero (${f(full.len, 0)} m)</option>${zs.map((a) => `<option value="${a}" ${String(S.trZoom) === String(a) ? 'selected' : ''}>Tratto ${a}–${Math.min(a + 250, Math.round(full.len))} m</option>`).join('')}</select>
+    <select id="trMono"><option value="ruota" ${S.trMono === 'ruota' ? 'selected' : ''}>Posizione mono: alla ruota</option><option value="stelo" ${S.trMono === 'stelo' ? 'selected' : ''}>Posizione mono: allo stelo</option></select>
+  </div>
+  ${cmpBar({ lap: true })}
+  <p class="note muted" style="margin:0">Max, min, media e mediana sono calcolati sul tratto mostrato. Tocca un grafico per leggere il valore in un punto.${cmpOthers().length ? ' Il giro delle altre sessioni è allineato sulla pista con il GPS, così lo stesso punto cade alla stessa distanza.' : ''}</p>
+  ${card('cTrPF', 'Forcella: posizione')}${card('cTrPR', `Mono: posizione (${ref})`)}
+  ${card('cTrVF', 'Forcella: velocità')}${card('cTrVR', 'Mono: velocità (stelo)')}
+  <p class="note muted">Velocità: ${cmpOthers().length ? 'sopra lo zero compressione, sotto ritorno; un colore per sessione' : 'rosso = compressione, blu = ritorno'}. Media e mediana delle velocità sono sul tempo in movimento (oltre 0,02 m/s).</p>`;
+}
+function afterTraccia() {
+  $('#trLap').onchange = (e) => { S.giroLap = +e.target.value; render(); };
+  $('#trZoom').onchange = (e) => { S.trZoom = e.target.value; render(); };
+  $('#trMono').onchange = (e) => { S.trMono = e.target.value; render(); };
+  const tr = trData();
+  if (!tr || !tr.x.length) return;
+  const P = tr.P, xr = { xmin: tr.x[0], xmax: tr.x[tr.x.length - 1] };
+  const sw = (col, txt, dash) => `<span><span class="swatch" style="background:${dash ? `repeating-linear-gradient(90deg,${col} 0 5px,transparent 5px 8px)` : col}"></span>${txt}</span>`;
+  // giri delle sessioni a confronto, allineati sul giro della sessione aperta
+  const cmp = cmpOthers().filter((s) => rawOf(s)).map((s) => {
+    const lapO = cmpLapOf(s);
+    if (lapO === null) return null;
+    const PO = paramsFor(s), rawO = rawOf(s);
+    const t = C.lapTrace(rawO, PO, lapO, null, null, S.trMono === 'stelo');
+    if (!t) return null;
+    const map = C.alignLap(S.curData, P, S.giroLap, rawO, PO, lapO);
+    const xa = t.x.map(map), keep = [];
+    for (let k = 0; k < xa.length; k++) if (xa[k] >= xr.xmin && xa[k] <= xr.xmax) keep.push(k);
+    const pick = (arr) => keep.map((k) => arr[k]);
+    return { s, lap: lapO, P: PO, x: pick(xa), front: pick(t.front), rear: pick(t.rear), vF: pick(t.vF), vR: pick(t.vR), color: colorOf(s.id) };
+  }).filter(Boolean);
+  const many = cmp.length > 0, curCol = colorOf(S.cur.id);
+  const curName = `${sessShort(S.cur)} giro ${S.giroLap}`;
+  const pst = (x, a) => { if (!a.length) return null; let mx = 0, sum = 0; for (let k = 0; k < a.length; k++) { if (a[k] > a[mx]) mx = k; sum += a[k]; } return { max: a[mx], xMax: x[mx], media: sum / a.length }; };
+  const vst = (x, a) => { if (!a.length) return null; let mx = 0, mn = 0; for (let k = 0; k < a.length; k++) { if (a[k] > a[mx]) mx = k; if (a[k] < a[mn]) mn = k; } return { comp: a[mx], xc: x[mx], rit: -a[mn], xr: x[mn] }; };
+  // con il confronto le linee di media e mediana non si disegnano (restano i valori nella legenda)
+  const swm = (col, txt) => (many ? `<span>${txt}</span>` : sw(col, txt, true));
+  const pos = (id, key, st, col, sag, name) => {
+    const y = tr[key];
+    const items = [sw(ST_COL.max, `max <b>${f(st.max, 0)}</b> mm a ${f(st.xMax, 0)} m`), sw(ST_COL.min, `min <b>${f(st.min, 0)}</b> mm a ${f(st.xMin, 0)} m`),
+      swm(ST_COL.media, `media <b>${f(st.media, 1)}</b> mm`), swm(ST_COL.mediana, `mediana <b>${f(st.mediana, 1)}</b> mm`), sw(ST_COL.sag, `race sag ${f(sag, 0)} mm`, true)];
+    if (many) {
+      items.unshift(sw(curCol, `<b>${esc(curName)}</b>:`));
+      cmp.forEach((c) => { const q = pst(c.x, c[key]); if (q) items.push(`<span style="flex-basis:100%;height:0"></span>`, sw(c.color, `<b>${esc(sessShort(c.s))} giro ${c.lap}</b>: max <b>${f(q.max, 0)}</b> mm a ${f(q.xMax, 0)} m · media <b>${f(q.media, 1)}</b> mm`)); });
+    }
+    $('#' + id + 'L').innerHTML = items.join('');
+    const series = [{ name: many ? curName : name, x: tr.x, y, color: many ? curCol : col, width: 1.6 }]
+      .concat(cmp.map((c) => ({ name: `${sessShort(c.s)} giro ${c.lap}`, x: c.x, y: c[key], color: c.color, width: 1.4 })));
+    chart($('#' + id), Object.assign({ series, legend: false, ymin: 0,
+      hlines: many ? [{ y: sag, color: ST_COL.sag }] : [{ y: st.media, color: ST_COL.media }, { y: st.mediana, color: ST_COL.mediana }, { y: sag, color: ST_COL.sag }],
+      marks: [{ x: st.xMax, y: st.max, color: ST_COL.max, label: 'max ' + f(st.max, 0) }, { x: st.xMin, y: st.min, color: ST_COL.min, label: 'min ' + f(st.min, 0) }],
+      xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' mm', tipfmt: (v) => f(v, 0) }, xr));
+  };
+  const kf = S.trMono === 'stelo' ? 1 / P.rapporto : 1;
+  pos('cTrPF', 'front', tr.stats.front, COLORS[0], P.sagAnt, 'Forcella');
+  pos('cTrPR', 'rear', tr.stats.rear, COLORS[1], P.sagPost * kf, 'Mono');
+  const vel = (id, key, st, name) => {
+    const y = tr[key];
+    const cc = many ? curCol : ST_COL.comp, rc = many ? curCol : ST_COL.rit;
+    const items = [
+      sw(cc, `<b>Compressione</b> max <b>${f(st.comp.max, 2)}</b> m/s a ${f(st.comp.xMax, 0)} m`),
+      swm(ST_COL.media, `media <b>${f(st.comp.media, 2)}</b>`), swm(ST_COL.mediana, `mediana <b>${f(st.comp.mediana, 2)}</b>`),
+      sw(rc, `<b>Ritorno</b> max <b>${f(st.rit.max, 2)}</b> m/s a ${f(st.rit.xMax, 0)} m`),
+      swm(ST_COL.media, `media <b>${f(st.rit.media, 2)}</b>`), swm(ST_COL.mediana, `mediana <b>${f(st.rit.mediana, 2)}</b>`)];
+    if (many) {
+      items.unshift(sw(curCol, `<b>${esc(curName)}</b>:`));
+      cmp.forEach((c) => { const q = vst(c.x, c[key]); if (q) items.push(`<span style="flex-basis:100%;height:0"></span>`, sw(c.color, `<b>${esc(sessShort(c.s))} giro ${c.lap}</b>: comp. max <b>${f(q.comp, 2)}</b> m/s a ${f(q.xc, 0)} m · rit. max <b>${f(q.rit, 2)}</b> m/s a ${f(q.xr, 0)} m`)); });
+    }
+    $('#' + id + 'L').innerHTML = items.join('');
+    const series = many
+      ? [{ name: curName, x: tr.x, y, color: curCol, width: 1.4 }].concat(cmp.map((c) => ({ name: `${sessShort(c.s)} giro ${c.lap}`, x: c.x, y: c[key], color: c.color, width: 1.3 })))
+      : [{ name, x: tr.x, y, color: ST_COL.comp, sign: [ST_COL.comp, ST_COL.rit], width: 1.4 }];
+    chart($('#' + id), Object.assign({ series, legend: false,
+      hlines: many ? [] : [{ y: st.comp.media, color: ST_COL.media }, { y: st.comp.mediana, color: ST_COL.mediana }, { y: -st.rit.media, color: ST_COL.media }, { y: -st.rit.mediana, color: ST_COL.mediana }],
+      marks: [{ x: st.comp.xMax, y: st.comp.max, color: many ? '#ffffff' : ST_COL.comp, label: 'max comp. ' + f(st.comp.max, 2), below: true }, { x: st.rit.xMax, y: -st.rit.max, color: many ? '#ffffff' : ST_COL.rit, label: 'max rit. ' + f(st.rit.max, 2) }],
+      xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' m/s', yfmt: (v) => f(v, 1), tipfmt: (v) => f(v, 2, true) }, xr));
+  };
+  vel('cTrVF', 'vF', tr.stats.vF, 'Forcella');
+  vel('cTrVR', 'vR', tr.stats.vR, 'Mono (stelo)');
+}
+
 /* --- sag nel giro */
 function viewGiro() {
   const laps = C.lapNumbers(S.curData);
   if (!laps.length) return '<div class="card">La sessione non ha giri marcati.</div>';
-  if (!laps.includes(S.giroLap)) {
-    const lt = C.lapTable(S.curData, paramsFor(S.cur));
-    S.giroLap = lt.reduce((a, b) => (b.tempo < a.tempo ? b : a)).giro;
-  }
+  if (!laps.includes(S.giroLap)) S.giroLap = bestLapN(S.cur);
+  const many = cmpOthers().length > 0;
   return `<div class="seg"><select id="giroSel">${laps.map((k) => `<option value="${k}" ${k === S.giroLap ? 'selected' : ''}>Giro ${k}</option>`).join('')}</select></div>
+  ${cmpBar({ lap: true })}
   <div class="card"><h3>Distanza dal race sag lungo il giro (media su 1 s)</h3><canvas class="chart tall" id="cSag"></canvas>
-    <p class="note">0 = race sag. Positivo = più affondata del race sag. Tocca il grafico per leggere i valori; la stessa informazione è sulla mappa.</p></div>
+    <p class="note">0 = race sag. Positivo = più affondata del race sag. Tocca il grafico per leggere i valori; la stessa informazione è sulla mappa.${many ? ' Linea continua = forcella, tratteggiata = mono. Il giro delle altre sessioni è allineato sulla pista con il GPS.' : ''}</p></div>
   <div class="card" style="margin-top:12px"><h3>Bilanciamento lungo il giro</h3><canvas class="chart" id="cBil"></canvas>
     <p class="note">Sopra la fascia = carica sul posteriore, sotto = carica sull'anteriore.</p></div>`;
 }
@@ -1804,11 +2401,33 @@ function afterGiro() {
   const P = paramsFor(S.cur);
   const tr = C.sagTrace(S.curData, P, S.giroLap);
   if (!tr) return;
-  chart($('#cSag'), { series: [{ name: 'Forcella', x: tr.x, y: tr.fa, color: COLORS[0] }, { name: 'Mono (ruota)', x: tr.x, y: tr.po, color: COLORS[1] }],
-    xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' mm', tipfmt: (v) => f(v, 0, true) });
-  chart($('#cBil'), { series: [{ name: 'Bilanciamento', x: tr.x, y: tr.bil, color: COLORS[3] }],
+  const others = cmpOthers().filter((s) => rawOf(s)).map((s) => {
+    const lapO = cmpLapOf(s);
+    if (lapO === null) return null;
+    const PO = paramsFor(s), rawO = rawOf(s);
+    const t = C.sagTrace(rawO, PO, lapO);
+    if (!t) return null;
+    const map = C.alignLap(S.curData, P, S.giroLap, rawO, PO, lapO);
+    return { s, name: `${sessShort(s)} giro ${lapO}`, x: t.x.map(map), t };
+  }).filter(Boolean);
+  const xr = { xmin: 0, xmax: tr.x[tr.x.length - 1] };
+  if (!others.length) {
+    chart($('#cSag'), { series: [{ name: 'Forcella', x: tr.x, y: tr.fa, color: COLORS[0] }, { name: 'Mono (ruota)', x: tr.x, y: tr.po, color: COLORS[1] }],
+      xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' mm', tipfmt: (v) => f(v, 0, true) });
+    chart($('#cBil'), { series: [{ name: 'Bilanciamento', x: tr.x, y: tr.bil, color: COLORS[3] }],
+      hlines: [{ y: P.targetBil + P.sogliaBil, color: '#5b6875' }, { y: P.targetBil - P.sogliaBil, color: '#5b6875' }],
+      xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' punti', tipfmt: (v) => f(v, 1, true) });
+    return;
+  }
+  const curName = `${sessShort(S.cur)} giro ${S.giroLap}`, cc = colorOf(S.cur.id);
+  chart($('#cSag'), Object.assign({
+    series: [{ name: 'Forc. ' + curName, x: tr.x, y: tr.fa, color: cc }, { name: 'Mono ' + curName, x: tr.x, y: tr.po, color: cc, dash: true }]
+      .concat(others.flatMap((o) => [{ name: 'Forc. ' + o.name, x: o.x, y: o.t.fa, color: colorOf(o.s.id), width: 1.5 }, { name: 'Mono ' + o.name, x: o.x, y: o.t.po, color: colorOf(o.s.id), dash: true, width: 1.5 }])),
+    xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' mm', tipfmt: (v) => f(v, 0, true) }, xr));
+  chart($('#cBil'), Object.assign({
+    series: [{ name: curName, x: tr.x, y: tr.bil, color: cc }].concat(others.map((o) => ({ name: o.name, x: o.x, y: o.t.bil, color: colorOf(o.s.id), width: 1.5 }))),
     hlines: [{ y: P.targetBil + P.sogliaBil, color: '#5b6875' }, { y: P.targetBil - P.sogliaBil, color: '#5b6875' }],
-    xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' punti', tipfmt: (v) => f(v, 1, true) });
+    xlabel: 'distanza nel giro (m)', xunit: ' m', yunit: ' punti', tipfmt: (v) => f(v, 1, true) }, xr));
 }
 
 /* --- mappa */
@@ -1841,30 +2460,165 @@ function colorFor(v, L) {
 let MAP = null;
 function viewMappa() {
   const laps = C.lapNumbers(S.curData);
+  const others = cmpOthers();
+  const pickTxt = S.mapPick === 1 ? 'Tocca sulla pista il punto di <b>inizio</b> del tratto.'
+    : S.mapPick === 2 ? 'Ora tocca il punto di <b>fine</b> del tratto, nel senso di marcia.' : '';
   return `<div class="seg">
     <select id="mapLayer">${Object.entries(LAYERS).map(([k, L]) => `<option value="${k}" ${k === S.mapLayer ? 'selected' : ''}>${L.name}</option>`).join('')}</select>
     <select id="mapLap"><option value="media" ${S.mapLap === 'media' ? 'selected' : ''}>Media di tutti i giri</option>
       ${laps.map((k) => `<option value="${k}" ${String(S.mapLap) === String(k) ? 'selected' : ''}>Giro ${k}</option>`).join('')}</select>
+    <button id="segPick" class="${S.mapPick ? '' : 'primary'}">${S.mapPick ? 'Annulla selezione' : S.mapSeg ? 'Nuovo tratto' : 'Seleziona un tratto'}</button>
+    ${S.mapSeg && !S.mapPick ? '<button id="segClear">Togli il tratto</button>' : ''}
   </div>
+  ${cmpBar({ lap: !!S.mapSeg })}
+  ${pickTxt ? `<div class="mapbanner">${pickTxt}</div>` : ''}
   <div class="grid2" style="grid-template-columns:minmax(0,2.2fr) minmax(280px,1fr)">
-    <div><div id="map"></div><div class="legend" id="mapLegend"></div></div>
+    <div><div id="map" class="${S.mapPick ? 'pick' : ''}"></div><div class="legend" id="mapLegend"></div></div>
     <div class="card"><h3>Punti critici ricorrenti</h3><div id="hotList"></div>
-      <p class="note">Zone di circa 10 m, media sui giri. Tocca una riga per centrarla sulla mappa.</p></div>
+      <p class="note">Zone di circa 10 m, media sui giri. Tocca una riga per centrarla sulla mappa; <b>Analizza</b> seleziona gli 80 m di pista intorno al punto.</p></div>
+  </div>
+  <div id="segPanel">${S.mapSeg ? '' : `<div class="card" style="margin-top:12px"><h3>Analisi di un tratto</h3><p class="muted" style="margin:0">Premi <b>Seleziona un tratto</b> e tocca sulla pista l'inizio e la fine della zona che ti interessa: vedi come lavorano forcella e mono in quel tratto${others.length ? ', a confronto con le altre sessioni scelte' : ''}.</p></div>`}</div>`;
+}
+
+/* --- tratto di pista */
+function nearestPt(pts, lat, lon) {
+  const mlon = Math.cos(lat * Math.PI / 180);
+  let best = -1, bd = Infinity;
+  for (let k = 0; k < pts.length; k++) { const dx = (pts[k].lon - lon) * mlon, dy = pts[k].lat - lat, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = k; } }
+  return { k: best, m: Math.sqrt(bd) * 111320 };
+}
+function onMapPick(ll, pts) {
+  const { k, m } = nearestPt(pts, ll.lat, ll.lng);
+  if (k < 0 || m > 40) { toast('Tocca sulla linea della pista'); return; }
+  const p = pts[k];
+  const Q = { lat: p.lat, lon: p.lon, hd: C.headingOf(pts, k), dlap: p.dlap };
+  if (S.mapPick === 1) { S.segA = Q; S.mapPick = 2; render(); return; }
+  setSegment(S.segA, Q);
+}
+function setSegment(A, B) {
+  const mlon = 111320 * Math.cos(A.lat * Math.PI / 180);
+  if (Math.hypot((A.lat - B.lat) * 111320, (A.lon - B.lon) * mlon) < 10) { toast('Il tratto è troppo corto: scegli una fine più lontana'); return; }
+  const passes = C.segmentPasses(S.curData, paramsFor(S.cur), A, B, null);
+  if (!passes.length) { toast('In questo tratto non trovo passaggi della sessione: riprova', 3500); S.mapPick = 1; S.segA = null; render(); return; }
+  const lens = passes.map((p) => p.len).sort((a, b) => a - b);
+  S.mapSeg = { A, B, len: lens[Math.floor(lens.length / 2)] };
+  S.mapPick = 0; S.segA = null;
+  render();
+  setTimeout(() => { const el = $('#segPanel'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 150);
+}
+// tratto di 80 m intorno a un punto critico, sul giro mostrato (o sul migliore)
+function segAround(c) {
+  const lapN = S.mapLap === 'media' ? bestLapN(S.cur) : S.mapLap;
+  const fx = C.lapFixes(S.curData, paramsFor(S.cur), lapN);
+  if (fx.length < 10) return;
+  const k = nearestPt(fx, c.lat, c.lon).k, d0 = fx[k].d;
+  let a = k; while (a > 0 && fx[a].d > d0 - 40) a--;
+  let b = k; while (b < fx.length - 1 && fx[b].d < d0 + 40) b++;
+  const Q = (i) => ({ lat: fx[i].lat, lon: fx[i].lon, hd: C.headingOf(fx, i), dlap: fx[i].d });
+  setSegment(Q(a), Q(b));
+}
+// passaggi nel tratto per la sessione aperta e per quelle a confronto
+function segData() {
+  const seg = S.mapSeg;
+  return [S.cur].concat(cmpOthers()).filter((s) => rawOf(s)).map((s) => {
+    const raw = rawOf(s), P = paramsFor(s), cur = s.id === S.cur.id;
+    const passes = C.segmentPasses(raw, P, seg.A, seg.B, seg.len);
+    const lapSel = cur ? S.mapLap : (S.mapLap === 'media' ? 'media' : cmpLapOf(s));
+    let use = lapSel === 'media' ? passes.filter((p) => p.lap > 0) : passes.filter((p) => p.lap === lapSel);
+    if (!use.length && lapSel === 'media') use = passes;
+    const lapShow = lapSel === 'media' ? (cur ? bestLapN(s) : cmpLapOf(s)) : lapSel;
+    const show = passes.find((p) => p.lap === lapShow) || use[0] || null;
+    let a = null, spe = NaN, dur = NaN;
+    if (use.length) {
+      const m = new Uint8Array(raw.n);
+      use.forEach((p) => m.fill(1, p.i0, p.i1 + 1));
+      a = C.analyze(raw, P, m);
+      let sum = 0, n = 0;
+      use.forEach((p) => { for (let i = p.i0; i <= p.i1; i++) if (Number.isFinite(raw.spe[i])) { sum += raw.spe[i]; n++; } });
+      spe = n ? sum / n : NaN;
+      dur = use.reduce((x, p) => x + p.dur, 0) / use.length;
+    }
+    return { s, raw, P, cur, passes, use, show, a, spe, dur, lapSel };
+  });
+}
+function segPanel(D) {
+  const seg = S.mapSeg, N = D.length, labW = 210, colW = 150;
+  const head = D.map((x) => `<th style="--c:${colorOf(x.s.id)}">${esc(sessShort(x.s))}<small>${!x.use.length ? 'nessun passaggio' : x.lapSel === 'media' ? `media di ${x.use.length} passaggi` : `giro ${x.lapSel}`}</small></th>`).join('');
+  const row = (name, fn, cls) => `<tr><td>${name}</td>${D.map((x) => (x.a ? `<td class="${cls ? cls(x) : ''}">${fn(x)}</td>` : '<td class="na">—</td>')).join('')}</tr>`;
+  const sec = (t) => `<tr class="sec"><td colspan="${N + 1}">${t}</td></tr>`;
+  const dmin = Math.min(...D.map((x) => x.dur).filter(Number.isFinite));
+  const v = (x, k, d) => `${f(x.a[k][d].media, 2)} / ${f(x.a[k][d].max, 2)}`;
+  const where = Number.isFinite(seg.A.dlap) ? ` · inizia a ${f(seg.A.dlap, 0)} m dal via` : '';
+  const none = D.filter((x) => !x.use.length).map((x) => esc(sessShort(x.s)));
+  return `<div class="card" style="margin-top:12px"><h3>Tratto selezionato · ${f(seg.len, 0)} m${where}</h3><div class="scroll">
+    <table class="tbl cmp" style="width:${labW + colW * N}px;min-width:100%"><colgroup><col style="width:${labW}px">${D.map(() => `<col style="width:${colW}px">`).join('')}</colgroup>
+    <thead><tr><th></th>${head}</tr></thead><tbody>
+    ${row('Tempo nel tratto', (x) => f(x.dur, 2) + ' s', (x) => (N > 1 && x.dur === dmin ? 'best' : ''))}
+    ${row('Velocità media moto', (x) => f(x.spe, 0) + ' km/h')}
+    ${row('Bilanciamento', (x) => `<span class="${x.a.bilanciamentoTesto.cls}">${f(x.a.bilanciamento, 1, true)}</span>`)}
+    ${sec('Forcella')}
+    ${row('Posizione media', (x) => `${f(x.a.front.media, 0)} mm · ${f(x.a.front.mediaPct, 0)}%`)}
+    ${row('Scarto dal race sag', (x) => f(x.a.front.scartoSag, 1, true) + ' mm')}
+    ${row('Massima', (x) => `${f(x.a.front.max, 0)} mm · ${f(x.a.front.max / x.P.corsaAnt * 100, 0)}%`)}
+    ${row('V comp. media / max (m/s)', (x) => v(x, 'velAnt', 'comp'))}
+    ${row('V rit. media / max (m/s)', (x) => v(x, 'velAnt', 'rit'))}
+    ${sec('Mono')}
+    ${row('Posizione media (ruota)', (x) => `${f(x.a.rear.media, 0)} mm · ${f(x.a.rear.mediaPct, 0)}%`)}
+    ${row('Scarto dal race sag', (x) => f(x.a.rear.scartoSag, 1, true) + ' mm')}
+    ${row('Massima (ruota)', (x) => `${f(x.a.rear.max, 0)} mm · ${f(x.a.rear.max / x.P.corsaPost * 100, 0)}%`)}
+    ${row('V comp. stelo media / max', (x) => v(x, 'velPostStelo', 'comp'))}
+    ${row('V rit. stelo media / max', (x) => v(x, 'velPostStelo', 'rit'))}
+    ${sec('Fondocorsa')}
+    ${row('Forcella / mono', (x) => `${x.a.front.fondo} / ${x.a.rear.fondo}`)}
+    </tbody></table></div>
+    <p class="note">Valori su tutti i passaggi nel tratto dei giri cronometrati (o del giro scelto). I grafici mostrano un passaggio per sessione: il giro scelto, oppure il migliore. In verde il tempo più basso nel tratto.${none.length ? ` <span class="warn">Nessun passaggio trovato per: ${none.join(', ')} (traiettoria troppo lontana o pista diversa).</span>` : ''}</p></div>
+  <div class="grid2" style="margin-top:12px">
+    <div class="card"><h3>Forcella: posizione nel tratto</h3><canvas class="chart" id="cSegPF"></canvas></div>
+    <div class="card"><h3>Mono: posizione nel tratto (ruota)</h3><canvas class="chart" id="cSegPR"></canvas></div>
+    <div class="card"><h3>Forcella: velocità nel tratto</h3><canvas class="chart" id="cSegVF"></canvas></div>
+    <div class="card"><h3>Mono: velocità nel tratto (stelo)</h3><canvas class="chart" id="cSegVR"></canvas></div>
   </div>`;
+}
+function segCharts(D) {
+  const seg = S.mapSeg;
+  const tr = D.filter((x) => x.show).map((x) => {
+    const t = C.rangeTrace(x.raw, x.P, x.show.i0, x.show.i1, null, null, false);
+    if (!t) return null;
+    const k = seg.len / (x.show.len || seg.len);   // stessa scala in metri per tutte le sessioni
+    return { x, name: `${sessShort(x.s)} giro ${x.show.lap}`, xs: t.x.map((v) => v * k), t };
+  }).filter(Boolean);
+  if (!tr.length) return;
+  const single = tr.length === 1;
+  const base = { xmin: 0, xmax: seg.len, xlabel: "metri dall'inizio del tratto", xunit: ' m' };
+  const sers = (key, col) => tr.map((q) => ({ name: q.name, x: q.xs, y: q.t[key], color: single ? col : colorOf(q.x.s.id), width: q.x.cur ? 2 : 1.6 }));
+  const P0 = D[0].P;
+  chart($('#cSegPF'), Object.assign({ series: sers('front', COLORS[0]), ymin: 0, yunit: ' mm', tipfmt: (v) => f(v, 0), hlines: [{ y: P0.sagAnt, color: ST_COL.sag }] }, base));
+  chart($('#cSegPR'), Object.assign({ series: sers('rear', COLORS[1]), ymin: 0, yunit: ' mm', tipfmt: (v) => f(v, 0), hlines: [{ y: P0.sagPost, color: ST_COL.sag }] }, base));
+  const vser = (key) => (single ? [{ name: tr[0].name, x: tr[0].xs, y: tr[0].t[key], color: ST_COL.comp, sign: [ST_COL.comp, ST_COL.rit], width: 1.6 }] : sers(key));
+  const vfmt = (key) => { const m = Math.max(...tr.flatMap((q) => q.t[key].map(Math.abs)).filter(Number.isFinite)); return (v) => f(v, m < 0.6 ? 2 : 1); };
+  chart($('#cSegVF'), Object.assign({ series: vser('vF'), yunit: ' m/s', yfmt: vfmt('vF'), tipfmt: (v) => f(v, 2, true) }, base));
+  chart($('#cSegVR'), Object.assign({ series: vser('vR'), yunit: ' m/s', yfmt: vfmt('vR'), tipfmt: (v) => f(v, 2, true) }, base));
 }
 function afterMappa() {
   $('#mapLayer').onchange = (e) => { S.mapLayer = e.target.value; render(); };
   $('#mapLap').onchange = (e) => { S.mapLap = e.target.value === 'media' ? 'media' : +e.target.value; render(); };
+  $('#segPick').onclick = () => { S.mapPick = S.mapPick ? 0 : 1; S.segA = null; render(); };
+  const clr = $('#segClear');
+  if (clr) clr.onclick = () => { S.mapSeg = null; render(); };
   const P = paramsFor(S.cur), L = LAYERS[S.mapLayer];
   const seg = S.mapLap === 'media' ? 'giri' : S.mapLap;
   const pts = C.mapPoints(S.curData, P, seg);
   if (MAP) { MAP.remove(); MAP = null; }
   if (!pts.length) { $('#map').innerHTML = '<div class="empty">Nessun dato GPS</div>'; return; }
+  const pick = !!S.mapPick;
+  const pop = (layer, html) => (pick ? layer : layer.bindPopup(html));   // durante la selezione i tocchi vanno alla mappa
   MAP = L_.map('map', { zoomControl: true, attributionControl: true, preferCanvas: true });
   const sat = L_.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 19, attribution: 'Esri, Maxar' });
   if (navigator.onLine) sat.addTo(MAP);
   const bounds = L_.latLngBounds(pts.map((p) => [p.lat, p.lon]));
-  MAP.fitBounds(bounds, { padding: [20, 20] });
+  if (S.mapView && S.mapView.id === S.cur.id) MAP.setView(S.mapView.c, S.mapView.z);
+  else MAP.fitBounds(bounds, { padding: [20, 20] });
+  MAP.on('moveend', () => { if (!MAP) return; const c = MAP.getCenter(); S.mapView = { id: S.cur.id, c: [c.lat, c.lng], z: MAP.getZoom() }; });
   // tracciato
   const latlngs = pts.map((p) => [p.lat, p.lon]);
   L_.polyline(latlngs, { color: '#ffffff', weight: 7, opacity: 0.25 }).addTo(MAP);
@@ -1872,21 +2626,21 @@ function afterMappa() {
   if (L.events) {
     L_.polyline(latlngs, { color: '#9aa7b4', weight: 3, opacity: 0.8 }).addTo(MAP);
     pts.forEach((p) => {
-      if (p.fondoAnt) L_.circleMarker([p.lat, p.lon], { radius: 9, color: '#fff', weight: 2, fillColor: COLORS[0], fillOpacity: 0.95 }).bindPopup(`Fondocorsa <b>forcella</b><br>giro ${p.lap} · ${f(p.dlap, 0)} m · ${f(p.fmax, 0)} mm · ${f(p.spe, 0)} km/h`).addTo(MAP);
-      if (p.fondoPost) L_.circleMarker([p.lat, p.lon], { radius: 9, color: '#fff', weight: 2, fillColor: COLORS[1], fillOpacity: 0.95 }).bindPopup(`Fondocorsa <b>mono</b><br>giro ${p.lap} · ${f(p.dlap, 0)} m · ${f(p.rmax, 0)} mm ruota · ${f(p.spe, 0)} km/h`).addTo(MAP);
+      if (p.fondoAnt) pop(L_.circleMarker([p.lat, p.lon], { radius: 9, color: '#fff', weight: 2, fillColor: COLORS[0], fillOpacity: 0.95 }), `Fondocorsa <b>forcella</b><br>giro ${p.lap} · ${f(p.dlap, 0)} m · ${f(p.fmax, 0)} mm · ${f(p.spe, 0)} km/h`).addTo(MAP);
+      if (p.fondoPost) pop(L_.circleMarker([p.lat, p.lon], { radius: 9, color: '#fff', weight: 2, fillColor: COLORS[1], fillOpacity: 0.95 }), `Fondocorsa <b>mono</b><br>giro ${p.lap} · ${f(p.dlap, 0)} m · ${f(p.rmax, 0)} mm ruota · ${f(p.spe, 0)} km/h`).addTo(MAP);
     });
     $('#mapLegend').innerHTML = `<span><span class="swatch" style="background:${COLORS[0]};height:10px;width:10px;border-radius:50%"></span>fondocorsa forcella</span><span><span class="swatch" style="background:${COLORS[1]};height:10px;width:10px;border-radius:50%"></span>fondocorsa mono</span><span>(oltre il ${100 - P.fondoPct}% della corsa)</span>`;
     cells = C.hotspots(pts, 'fondoAnt', 12).map((c) => Object.assign(c, { score: c.fondoAnt + c.fondoPost })).filter((c) => c.score > 0).sort((a, b) => b.score - a.score);
   } else {
     if (S.mapLap === 'media') {
       cells = C.hotspots(pts, L.key, 8);
-      cells.forEach((c) => L_.circleMarker([c.lat, c.lon], { radius: 5, stroke: false, fillColor: colorFor(c.v, L), fillOpacity: 0.95 })
-        .bindPopup(`${L.name}: <b>${f(c.v, L.unit === 'm/s' ? 2 : 1, L.div)} ${L.unit}</b><br>${f(c.dlap, 0)} m dal via · ${f(c.spe, 0)} km/h · ${c.giri} giri`).addTo(MAP));
+      cells.forEach((c) => pop(L_.circleMarker([c.lat, c.lon], { radius: 5, stroke: false, fillColor: colorFor(c.v, L), fillOpacity: 0.95 }),
+        `${L.name}: <b>${f(c.v, L.unit === 'm/s' ? 2 : 1, L.div)} ${L.unit}</b><br>${f(c.dlap, 0)} m dal via · ${f(c.spe, 0)} km/h · ${c.giri} giri`).addTo(MAP));
     } else {
       for (let i = 1; i < pts.length; i++) {
         const p = pts[i], q = pts[i - 1];
-        L_.polyline([[q.lat, q.lon], [p.lat, p.lon]], { color: colorFor(p[L.key], L), weight: 6, opacity: 0.95 })
-          .bindPopup(`${L.name}: <b>${f(p[L.key], L.unit === 'm/s' ? 2 : 1, L.div)} ${L.unit}</b><br>giro ${p.lap} · ${f(p.dlap, 0)} m · ${f(p.spe, 0)} km/h`).addTo(MAP);
+        pop(L_.polyline([[q.lat, q.lon], [p.lat, p.lon]], { color: colorFor(p[L.key], L), weight: 6, opacity: 0.95 }),
+          `${L.name}: <b>${f(p[L.key], L.unit === 'm/s' ? 2 : 1, L.div)} ${L.unit}</b><br>giro ${p.lap} · ${f(p.dlap, 0)} m · ${f(p.spe, 0)} km/h`).addTo(MAP);
       }
       cells = C.hotspots(pts, L.key, 10);
     }
@@ -1901,7 +2655,21 @@ function afterMappa() {
     if (picked.length >= 6) break;
     if (picked.every((p) => C.num(Math.hypot((p.lat - c.lat) * 111320, (p.lon - c.lon) * 111320 * Math.cos(c.lat * Math.PI / 180))) > 40)) picked.push(c);
   }
-  picked.forEach((c, i) => L_.marker([c.lat, c.lon], { icon: L_.divIcon({ className: '', html: `<div style="background:#0d1116;border:2px solid #fff;color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:700">${i + 1}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }) }).addTo(MAP));
+  picked.forEach((c, i) => L_.marker([c.lat, c.lon], { interactive: !pick, icon: L_.divIcon({ className: '', html: `<div style="background:#0d1116;border:2px solid #fff;color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:700">${i + 1}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }) }).addTo(MAP));
+  // tratto selezionato e punti scelti
+  const letter = (q, t) => L_.marker([q.lat, q.lon], { interactive: false, zIndexOffset: 1000, icon: L_.divIcon({ className: '', html: `<div style="background:#fff;color:#0d1116;border:2px solid #0d1116;border-radius:7px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:800">${t}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }) }).addTo(MAP);
+  let D = null;
+  if (S.mapSeg) {
+    D = segData();
+    D.filter((x) => x.show).forEach((x) => {
+      const ll = C.fixIndices(x.raw, x.show.i0, x.show.i1).map((i) => [x.raw.lat[i], x.raw.lon[i]]);
+      if (x.cur) L_.polyline(ll, { color: '#ffffff', weight: 13, opacity: 0.45, interactive: false }).addTo(MAP);
+      L_.polyline(ll, { color: colorOf(x.s.id), weight: 4, opacity: 1, dashArray: x.cur ? null : '7 6', interactive: false }).addTo(MAP);
+    });
+    letter(S.mapSeg.A, 'A'); letter(S.mapSeg.B, 'B');
+  }
+  if (S.mapPick === 2 && S.segA) letter(S.segA, 'A');
+  if (pick) MAP.on('click', (e) => onMapPick(e.latlng, pts));
   const desc = (c) => {
     if (L.events) return `fondocorsa forcella ${c.fondoAnt}, mono ${c.fondoPost}`;
     if (S.mapLayer === 'bil') return `${c.v > 0 ? 'carica posteriore' : 'carica anteriore'} ${f(c.v, 1, true)} punti`;
@@ -1910,15 +2678,20 @@ function afterMappa() {
   };
   $('#hotList').innerHTML = picked.length ? picked.map((c, i) => `<div class="list-item hs" data-i="${i}"><div class="pill">${i + 1}</div>
     <div class="grow"><div class="t">${Number.isFinite(c.dlap) ? f(c.dlap, 0) + ' m dal via' : 'zona'}</div>
-    <div class="s">${desc(c)} · ${f(c.spe, 0)} km/h${S.mapLap === 'media' ? ' · ' + c.giri + ' giri' : ''}</div></div></div>`).join('') : '<p class="muted">Nessun punto critico.</p>';
-  $$('#hotList .hs').forEach((el) => el.onclick = () => { const c = picked[+el.dataset.i]; MAP.setView([c.lat, c.lon], 19); });
+    <div class="s">${desc(c)} · ${f(c.spe, 0)} km/h${S.mapLap === 'media' ? ' · ' + c.giri + ' giri' : ''}</div></div><button class="an" data-an="${i}">Analizza</button></div>`).join('') : '<p class="muted">Nessun punto critico.</p>';
+  $$('#hotList .hs').forEach((el) => el.onclick = (e) => { if (e.target.closest('[data-an]')) return; const c = picked[+el.dataset.i]; MAP.setView([c.lat, c.lon], 19); });
+  $$('#hotList [data-an]').forEach((b) => b.onclick = (e) => { e.stopPropagation(); segAround(picked[+b.dataset.an]); });
+  if (D) { $('#segPanel').innerHTML = segPanel(D); segCharts(D); }
   setTimeout(() => MAP && MAP.invalidateSize(), 100);
 }
 
 /* --- setup */
 function viewSetup() {
   const s = S.cur, P = paramsFor(s);
-  return `<div class="card"><h3>Setup e dati della sessione</h3>
+  const others = cmpOthers().filter((x) => rawOf(x));
+  const cmpCard = others.length ? `<div class="card" style="margin-top:12px"><h3>Setup a confronto</h3><div class="scroll">${cmpTable([s].concat(others), ['setup', 'tempi'])}</div>
+    <p class="note">In arancione i valori diversi dalla sessione aperta (prima colonna). Per modificare il setup di un'altra sessione aprila da <b>Sessioni</b>.</p></div>` : '';
+  return `${cmpBar()}<div class="card"><h3>Setup e dati della sessione</h3>
     <div class="form" id="setupForm">
       <div><label>Data</label><input type="date" name="data" value="${esc(s.data)}"></div>
       <div><label>Ora</label><input type="time" name="ora" value="${esc(s.ora)}"></div>
@@ -1931,7 +2704,7 @@ function viewSetup() {
       <div class="full"><label>Altre note di setup</label><input name="s_note_setup" value="${esc((s.setup || {}).note_setup || '')}"></div>
     </div>
     <p class="note">Race sag usato nell'analisi: forcella ${f(P.sagAnt, 0)} mm, posteriore ${f(P.sagPost, 0)} mm (se vuoto vale quello della moto). Corse e rapporto di leva si impostano nella moto (Impostazioni).</p>
-    <div class="actions"><button class="primary" id="setupSave">Salva setup</button></div></div>`;
+    <div class="actions"><button class="primary" id="setupSave">Salva setup</button></div></div>${cmpCard}`;
 }
 function afterSetup() {
   const sel = $('#setupForm [name=bike]');
@@ -1944,77 +2717,96 @@ function afterSetup() {
     s.setup = readSetup(r, 's_');
     const copy = Object.assign({}, s); delete copy._d;
     await DB.put('sessions', copy);
-    S.curData._d = null;
+    invalidate();
     await refreshLists(); await openSession(s.id);
     toast('Setup salvato');
+    if (cmpOthers().length) render();
   };
 }
 
 /* --- confronto */
+/* tabella a colonne allineate: una colonna per sessione, le righe nell'ordine delle parti richieste */
+function cmpTable(sel, parts) {
+  const N = sel.length, colW = N > 3 ? 132 : 150, labW = 190;
+  const cols = `<colgroup><col style="width:${labW}px">${sel.map(() => `<col style="width:${colW}px">`).join('')}</colgroup>`;
+  const head = `<thead><tr><th></th>${sel.map((s) => {
+    const d = s.data ? s.data.split('-').reverse().join('/') : '';
+    return `<th style="--c:${colorOf(s.id)}">${esc(d)} ${esc(s.ora || '')}<small>${esc(s.pista || '')}${S.cur && s.id === S.cur.id ? ' · aperta' : ''}</small></th>`;
+  }).join('')}</tr></thead>`;
+  const sec = (t) => `<tr class="sec"><td colspan="${N + 1}">${t}</td></tr>`;
+  const row = (name, vals, cls) => `<tr><td>${name}</td>${vals.map((v, i) => `<td class="${cls ? cls(i) : ''}">${v}</td>`).join('')}</tr>`;
+  const timed = (s) => (s.laps || []).filter((l) => Number.isFinite(l.tempo));
+  const P = {
+    tempi() {
+      const bests = sel.map(bestLap), bmin = Math.min(...bests.filter(Number.isFinite));
+      const nums = Array.from(new Set(sel.flatMap((s) => timed(s).map((l) => l.n)))).sort((a, b) => a - b);
+      return sec('Tempi')
+        + row('Giro migliore', bests.map((b) => C.fmtTime(b)), (i) => (bests[i] === bmin ? 'best' : ''))
+        + row('Media giri', sel.map((s) => C.fmtTime(avgLap(s))))
+        + row('Giri cronometrati', sel.map((s) => timed(s).length))
+        + nums.map((n) => row(`Giro ${n}`, sel.map((s) => { const l = timed(s).find((x) => x.n === n); return l ? C.fmtTime(l.tempo) : '—'; }),
+          (i) => { const l = timed(sel[i]).find((x) => x.n === n); return !l ? 'na' : l.tempo === bests[i] ? 'best' : ''; })).join('');
+    },
+    setup() {
+      const ref = sel[0].setup || {};
+      const keys = SETUP_KEYS.filter((k) => sel.some((s) => (s.setup || {})[k] !== undefined && (s.setup || {})[k] !== ''));
+      return sec('Setup')
+        + row('Moto', sel.map((s) => esc((bikeOf(s) || {}).nome || '—')), (i) => (i > 0 && sel[i].bikeId !== sel[0].bikeId ? 'chg' : ''))
+        + keys.map((k) => row(esc(SETUP_LABEL[k]), sel.map((s) => esc(String((s.setup || {})[k] ?? '—')).replace('.', ',')),
+          (i) => (i > 0 && String((sel[i].setup || {})[k] ?? '') !== String(ref[k] ?? '') ? 'chg' : ''))).join('')
+        + (keys.length ? '' : row('<span class="muted">nessun valore registrato</span>', sel.map(() => '')))
+        + row('Pilota', sel.map((s) => esc(s.pilota || '—')))
+        + row('Fondo / meteo', sel.map((s) => esc(s.condizioni || '—')))
+        + row('Note setup', sel.map((s) => esc((s.setup || {}).note_setup || '—')));
+    },
+    sosp() {
+      const res = sel.map((s) => anaOf(s, 'giri'));
+      const v = (a, k, d) => `${f(a[k][d].media, 2)} / ${f(a[k][d].max, 2)}`;
+      return sec('Sospensioni (giri cronometrati)')
+        + row('Bilanciamento', res.map((a) => `<span class="${a.bilanciamentoTesto.cls}">${f(a.bilanciamento, 1, true)}</span>`))
+        + row('Scarto race sag forcella', res.map((a) => f(a.front.scartoSag, 1, true) + ' mm'))
+        + row('Scarto race sag mono', res.map((a) => f(a.rear.scartoSag, 1, true) + ' mm'))
+        + row('Forcella v comp media / max', res.map((a) => v(a, 'velAnt', 'comp')))
+        + row('Forcella v rit media / max', res.map((a) => v(a, 'velAnt', 'rit')))
+        + row('Mono stelo v comp media / max', res.map((a) => v(a, 'velPostStelo', 'comp')))
+        + row('Mono stelo v rit media / max', res.map((a) => v(a, 'velPostStelo', 'rit')))
+        + row('Fondocorsa forcella / mono', res.map((a) => `${a.front.fondo} / ${a.rear.fondo}`));
+    },
+  };
+  return `<table class="tbl cmp" style="width:${labW + colW * N}px;min-width:100%">${cols}${head}<tbody>${parts.map((p) => P[p]()).join('')}</tbody></table>`;
+}
 function viewConfronto() {
   if (!S.sessions.length) return needSession();
   if (!S.cmpIds.length && S.cur) S.cmpIds = [S.cur.id];
-  const list = S.sessions.map((s) => `<label class="list-item" style="color:var(--fg);margin:0">
-      <input type="checkbox" data-cmp="${s.id}" ${S.cmpIds.includes(s.id) ? 'checked' : ''}>
-      <div class="grow"><div class="t">${esc(sessTitle(s))}</div><div class="s">${esc((bikeOf(s) || {}).nome || '')} · migliore ${C.fmtTime(bestLap(s))} · ${esc(setupSummary(s.setup))}</div></div></label>`).join('');
-  return `<div class="grid2" style="grid-template-columns:minmax(280px,1fr) minmax(0,2fr)">
-    <div class="card"><h3>Sessioni da confrontare</h3>${list}</div>
-    <div><div class="card"><h3>Tempi sul giro</h3><canvas class="chart" id="cLaps"></canvas></div>
-      <div class="card" style="margin-top:12px"><h3>Riepilogo</h3><div class="scroll" id="cmpTable"></div>
-      <p class="note">In arancione i valori di setup diversi dalla prima sessione selezionata. Valori sui giri cronometrati.</p></div></div>
+  const list = S.sessions.map((s) => {
+    const on = S.cmpIds.includes(s.id), col = colorOf(s.id);
+    return `<label class="list-item" style="color:var(--fg);margin:0">
+      <input type="checkbox" data-cmp="${s.id}" ${on ? 'checked' : ''}>
+      <span class="dot" style="background:${on ? col : 'transparent'};border:2px solid ${on ? col : 'var(--line)'}"></span>
+      <div class="grow"><div class="t">${esc(sessTitle(s))}${S.cur && S.cur.id === s.id ? ' <span class="muted" style="font-weight:500">· aperta</span>' : ''}</div><div class="s">${esc((bikeOf(s) || {}).nome || '')} · migliore ${C.fmtTime(bestLap(s))} · ${esc(setupSummary(s.setup))}</div></div></label>`;
+  }).join('');
+  return `<div class="cmpgrid">
+    <div class="card"><h3>Sessioni da confrontare</h3>${list}
+      <p class="note">Le sessioni scelte qui compaiono anche nelle altre schede, ognuna con il suo colore.</p></div>
+    <div style="min-width:0"><div class="card"><h3>Tempi sul giro</h3><canvas class="chart" id="cLaps"></canvas></div>
+      <div class="card" style="margin-top:12px"><h3>Tempi e setup a confronto</h3><div class="scroll" id="cmpTable"></div>
+      <p class="note">Ogni colonna è una sessione: tempi, setup e sospensioni stanno sotto la stessa intestazione. In verde il giro migliore di ogni sessione; in arancione i valori di setup diversi dalla prima colonna.</p></div></div>
   </div>`;
 }
-const CMP_CACHE = new Map();
-async function cmpData(s) {
-  const key = s.id + JSON.stringify(paramsFor(s)) + JSON.stringify(S.settings);
-  if (CMP_CACHE.has(key)) return CMP_CACHE.get(key);
-  const d = await DB.get('data', s.id);
-  const raw = { n: d.n, fs: d.fs, front: d.front, rear: d.rear, lap: d.lap, lat: d.lat, lon: d.lon, spe: d.spe, lapsHeader: d.lapsHeader || s.laps };
-  const a = C.analyze(raw, paramsFor(s), 'giri');
-  const out = { a };
-  CMP_CACHE.set(key, out);
-  return out;
-}
-async function afterConfronto() {
+function afterConfronto() {
   $$('[data-cmp]').forEach((c) => c.onchange = () => {
     const id = +c.dataset.cmp;
     S.cmpIds = c.checked ? Array.from(new Set(S.cmpIds.concat(id))) : S.cmpIds.filter((x) => x !== id);
-    afterConfronto();
+    saveCmp(); render();
   });
-  const sel = S.cmpIds.map((id) => S.sessions.find((s) => s.id === id)).filter(Boolean);
+  const sel = cmpOrder().filter((id) => S.cmpIds.includes(id)).map((id) => S.sessions.find((s) => s.id === id)).filter((s) => s && rawOf(s));
   if (!sel.length) { $('#cmpTable').innerHTML = '<p class="muted">Seleziona una o più sessioni.</p>'; chart($('#cLaps'), { series: [] }); return; }
   chart($('#cLaps'), {
-    series: sel.map((s, i) => { const l = (s.laps || []).filter((x) => Number.isFinite(x.tempo)); return { name: sessTitle(s), x: l.map((x) => x.n), y: l.map((x) => x.tempo), color: COLORS[i % COLORS.length] }; }),
+    series: sel.map((s) => { const l = (s.laps || []).filter((x) => Number.isFinite(x.tempo)); return { name: sessTitle(s), x: l.map((x) => x.n), y: l.map((x) => x.tempo), color: colorOf(s.id) }; }),
     xlabel: 'giro', xfmt: (v) => 'giro ' + f(v, 0), yfmt: (v) => C.fmtTime(v), tipfmt: (v) => C.fmtTime(v), xunit: '', legend: true, xint: true,
-    ...(() => { const t = sel.flatMap((s) => (s.laps || []).map((x) => x.tempo)).filter(Number.isFinite); if (!t.length) return {}; const lo = Math.min(...t), hi = Math.max(...t), m = Math.max(0.5, (hi - lo) * 0.15); return { ymin: lo - m, ymax: hi + m, xmin: 1, xmax: Math.max(2, ...sel.map((s) => (s.laps || []).length)) }; })(),
+    ...(() => { const t = sel.flatMap((s) => (s.laps || []).map((x) => x.tempo)).filter(Number.isFinite); if (!t.length) return {}; const lo = Math.min(...t), hi = Math.max(...t), m = Math.max(0.5, (hi - lo) * 0.15); return { ymin: lo - m, ymax: hi + m, xmin: 1, xmax: Math.max(2, ...sel.map((s) => Math.max(0, ...(s.laps || []).map((x) => x.n).filter(Number.isFinite)))) }; })(),
   });
-  spin(true, 'Calcolo…');
-  const res = [];
-  for (const s of sel) res.push(await cmpData(s));
-  spin(false);
-  const ref = sel[0].setup || {};
-  const keys = SETUP_KEYS.filter((k) => sel.some((s) => (s.setup || {})[k] !== undefined && (s.setup || {})[k] !== ''));
-  const head = `<tr><th></th>${sel.map((s, i) => `<th style="color:${COLORS[i % COLORS.length]}">${esc(sessTitle(s))}</th>`).join('')}</tr>`;
-  const row = (name, vals, cls) => `<tr><td>${name}</td>${vals.map((v, i) => `<td class="${cls ? cls(i) : ''}">${v}</td>`).join('')}</tr>`;
-  const bests = sel.map(bestLap), bmin = Math.min(...bests.filter(Number.isFinite));
-  let html = `<table class="tbl">${head}
-    ${row('Giro migliore', bests.map((b) => C.fmtTime(b)), (i) => bests[i] === bmin ? 'ok' : '')}
-    ${row('Media giri', sel.map((s) => C.fmtTime(avgLap(s))))}
-    ${row('Giri', sel.map((s) => (s.laps || []).length))}
-    ${row('Bilanciamento', res.map((r) => `<span class="${r.a.bilanciamentoTesto.cls}">${f(r.a.bilanciamento, 1, true)}</span>`))}
-    ${row('Scarto race sag forcella', res.map((r) => f(r.a.front.scartoSag, 1, true) + ' mm'))}
-    ${row('Scarto race sag mono', res.map((r) => f(r.a.rear.scartoSag, 1, true) + ' mm'))}
-    ${row('Forcella v comp media / max', res.map((r) => `${f(r.a.velAnt.comp.media, 2)} / ${f(r.a.velAnt.comp.max, 2)}`))}
-    ${row('Forcella v rit media / max', res.map((r) => `${f(r.a.velAnt.rit.media, 2)} / ${f(r.a.velAnt.rit.max, 2)}`))}
-    ${row('Mono stelo v comp media / max', res.map((r) => `${f(r.a.velPostStelo.comp.media, 2)} / ${f(r.a.velPostStelo.comp.max, 2)}`))}
-    ${row('Mono stelo v rit media / max', res.map((r) => `${f(r.a.velPostStelo.rit.media, 2)} / ${f(r.a.velPostStelo.rit.max, 2)}`))}
-    ${row('Fondocorsa forcella / mono', res.map((r) => `${r.a.front.fondo} / ${r.a.rear.fondo}`))}
-    <tr><th colspan="${sel.length + 1}" style="text-align:left;padding-top:14px">Setup</th></tr>
-    ${row('Moto', sel.map((s) => esc((bikeOf(s) || {}).nome || '')))}
-    ${keys.map((k) => row(SETUP_LABEL[k], sel.map((s) => esc(String((s.setup || {})[k] ?? '—')).replace('.', ',')), (i) => i > 0 && String((sel[i].setup || {})[k] ?? '') !== String(ref[k] ?? '') ? 'chg' : '')).join('')}
-    ${row('Note setup', sel.map((s) => esc((s.setup || {}).note_setup || '')))}
-  </table>`;
-  $('#cmpTable').innerHTML = html;
+  $('#cmpTable').innerHTML = cmpTable(sel, ['tempi', 'setup', 'sosp']);
 }
 
 /* ---------------------------------------------------------------- avvio */
@@ -2025,6 +2817,7 @@ window.addEventListener('resize', () => { clearTimeout(window._rz); window._rz =
     await DB.open();
     const st = await DB.get('kv', 'settings'); if (st) S.settings = Object.assign(S.settings, st.v);
     await refreshLists();
+    loadCmp();
     let last = null; try { last = +localStorage.getItem('pst-last'); } catch (e) { /* */ }
     if (last && S.sessions.find((s) => s.id === last)) await openSession(last);
     else if (S.sessions[0]) await openSession(S.sessions[0].id);
