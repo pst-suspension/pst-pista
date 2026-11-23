@@ -785,6 +785,13 @@ canvas.chart.tall{height:320px}
 .hs .an{min-height:36px;padding:4px 12px;flex:none}
 .gauge .needle.c{width:6px;transform:translateX(-3px)}
 .tbl .stick{position:sticky;left:0;background:var(--panel);z-index:1}
+.bilrow{padding:10px 0;border-bottom:1px solid var(--line)}
+.bilrow:last-child{border-bottom:0}
+.bilhead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.bbar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line)}
+.bbar span{display:block;height:100%}
+.bbl{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-top:4px}
+.bbl b{color:var(--fg)}
 </style>
 </head>
 <body>
@@ -1259,6 +1266,29 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
     return { x, fa, po, bil };
   }
 
+  /* bilanciamento e distanza dal race sag sui campioni i0..i1 (es. un passaggio in un tratto di pista).
+     Media mobile centrata di 1 s, come in sagTrace; ai bordi usa anche i campioni appena fuori dal tratto.
+     x = metri da i0; all = bilanciamento di ogni campione (per la ripartizione del tempo). */
+  function balanceRange(s, P0, i0, i1) {
+    const P = params(P0);
+    const t = rangeTrace(s, P0, i0, i1, null, null, false);
+    if (!t) return null;
+    const h = Math.max(1, Math.round(s.fs / 2));
+    const a = Math.max(0, i0 - h), b = Math.min(s.n - 1, i1 + h);
+    const cf = new Float64Array(b - a + 2), cr = new Float64Array(b - a + 2);
+    for (let i = a; i <= b; i++) { cf[i - a + 1] = cf[i - a] + s.front[i]; cr[i - a + 1] = cr[i - a] + s.rear[i]; }
+    const step = Math.max(1, Math.round(s.fs / 10));
+    const x = [], fa = [], po = [], bil = [], all = new Float32Array(i1 - i0 + 1);
+    for (let i = i0; i <= i1; i++) {
+      const lo = Math.max(a, i - h), hi = Math.min(b, i + h), n = hi - lo + 1;
+      const mf = (cf[hi - a + 1] - cf[lo - a]) / n, mr = (cr[hi - a + 1] - cr[lo - a]) / n;
+      const v = (mr - P.sagPost) / P.corsaPost * 100 - (mf - P.sagAnt) / P.corsaAnt * 100;
+      all[i - i0] = v;
+      if ((i - i0) % step === 0 || i === i1) { x.push(t.x[i - i0]); fa.push(mf - P.sagAnt); po.push(mr - P.sagPost); bil.push(v); }
+    }
+    return { x, fa, po, bil, all };
+  }
+
   /* traccia completa di un giro (o di un tratto x0..x1 in metri): posizione e velocità campione per campione */
   function lapTrace(s, P0, lapN, x0, x1, monoStelo) {
     let i0 = -1, i1 = -1;
@@ -1451,7 +1481,7 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
   }
 
   const api = { parseRows, parseMotoklikDate, parseLapTime, analyze, lapTable, lapNumbers, mapPoints, hotspots,
-    sagTrace, lapTrace, rangeTrace, lapFixes, fixIndices, headingOf, alignLap, segmentPasses,
+    sagTrace, lapTrace, rangeTrace, balanceRange, lapFixes, fixIndices, headingOf, alignLap, segmentPasses,
     params, DEFAULT_PARAMS, fmtTime, balanceLabel, num, deriv };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.PSTCore = api;
@@ -2528,7 +2558,7 @@ function segData() {
     if (!use.length && lapSel === 'media') use = passes;
     const lapShow = lapSel === 'media' ? (cur ? bestLapN(s) : cmpLapOf(s)) : lapSel;
     const show = passes.find((p) => p.lap === lapShow) || use[0] || null;
-    let a = null, spe = NaN, dur = NaN;
+    let a = null, spe = NaN, dur = NaN, bdist = null;
     if (use.length) {
       const m = new Uint8Array(raw.n);
       use.forEach((p) => m.fill(1, p.i0, p.i1 + 1));
@@ -2537,8 +2567,14 @@ function segData() {
       use.forEach((p) => { for (let i = p.i0; i <= p.i1; i++) if (Number.isFinite(raw.spe[i])) { sum += raw.spe[i]; n++; } });
       spe = n ? sum / n : NaN;
       dur = use.reduce((x, p) => x + p.dur, 0) / use.length;
+      // ripartizione del tempo nel tratto: carica anteriore / bilanciata / carica posteriore
+      const lo = P.targetBil - P.sogliaBil, hi = P.targetBil + P.sogliaBil;
+      let nA = 0, nB = 0, nP = 0;
+      use.forEach((p) => { const br = C.balanceRange(raw, P, p.i0, p.i1); if (br) br.all.forEach((v) => { if (v < lo) nA++; else if (v > hi) nP++; else nB++; }); });
+      const tot = nA + nB + nP;
+      if (tot) bdist = { ant: nA / tot * 100, ok: nB / tot * 100, post: nP / tot * 100 };
     }
-    return { s, raw, P, cur, passes, use, show, a, spe, dur, lapSel };
+    return { s, raw, P, cur, passes, use, show, a, spe, dur, lapSel, bdist };
   });
 }
 function segPanel(D) {
@@ -2572,12 +2608,33 @@ function segPanel(D) {
     ${row('Forcella / mono', (x) => `${x.a.front.fondo} / ${x.a.rear.fondo}`)}
     </tbody></table></div>
     <p class="note">Valori su tutti i passaggi nel tratto dei giri cronometrati (o del giro scelto). I grafici mostrano un passaggio per sessione: il giro scelto, oppure il migliore. In verde il tempo più basso nel tratto.${none.length ? ` <span class="warn">Nessun passaggio trovato per: ${none.join(', ')} (traiettoria troppo lontana o pista diversa).</span>` : ''}</p></div>
+  ${segBalanceCard(D)}
   <div class="grid2" style="margin-top:12px">
     <div class="card"><h3>Forcella: posizione nel tratto</h3><canvas class="chart" id="cSegPF"></canvas></div>
     <div class="card"><h3>Mono: posizione nel tratto (ruota)</h3><canvas class="chart" id="cSegPR"></canvas></div>
     <div class="card"><h3>Forcella: velocità nel tratto</h3><canvas class="chart" id="cSegVF"></canvas></div>
     <div class="card"><h3>Mono: velocità nel tratto (stelo)</h3><canvas class="chart" id="cSegVR"></canvas></div>
   </div>`;
+}
+// bilanciamento nel tratto: indicatore, giudizio, ripartizione del tempo e andamento metro per metro
+function segBalanceCard(D) {
+  const P0 = D[0].P, many = D.length > 1;
+  const withA = D.filter((x) => x.a);
+  const g = many ? gauge(0, P0, withA.map((x) => ({ bil: x.a.bilanciamento, color: colorOf(x.s.id) }))) : gauge(withA.length ? withA[0].a.bilanciamento : NaN, P0);
+  const rows = D.map((x) => {
+    if (!x.a) return `<div class="bilrow"><div class="bilhead">${dotLabel(x.s)}<span class="muted">nessun passaggio</span></div></div>`;
+    const b = x.a.bilanciamentoTesto, d = x.bdist;
+    return `<div class="bilrow"><div class="bilhead">${many ? dotLabel(x.s) : '<span class="muted">Media nel tratto</span>'}<span class="${b.cls}"><b>${f(x.a.bilanciamento, 1, true)} punti</b> · ${esc(b.testo)}</span></div>
+      ${d ? `<div class="bbar" title="carica anteriore / bilanciata / carica posteriore"><span style="width:${d.ant}%;background:rgb(40,120,255)"></span><span style="width:${d.ok}%;background:rgb(110,120,130)"></span><span style="width:${d.post}%;background:rgb(255,60,50)"></span></div>
+      <div class="bbl"><span>carica ant. <b>${f(d.ant, 0)}%</b></span><span>bilanciata <b>${f(d.ok, 0)}%</b></span><span>carica post. <b>${f(d.post, 0)}%</b></span></div>` : ''}</div>`;
+  }).join('');
+  return `<div class="card" style="margin-top:12px"><h3>Bilanciamento nel tratto</h3>
+    <div class="cmpgrid">
+      <div>${g}<div style="margin-top:8px">${rows}</div></div>
+      <div style="min-width:0"><div class="muted" style="font-size:13px;margin-bottom:4px">Bilanciamento lungo il tratto (punti)</div><canvas class="chart" id="cSegBil"></canvas></div>
+    </div>
+    <div class="muted" style="font-size:13px;margin:12px 0 4px">Distanza dal race sag lungo il tratto (mm)</div><canvas class="chart" id="cSegSag"></canvas>
+    <p class="note">Punti = scarto del mono − scarto della forcella dal race sag, in % della corsa (media su 1 s). Negativo = carica l'anteriore, positivo = carica il posteriore; bilanciata entro ±${f(P0.sogliaBil, 0)} punti (linee grigie). Le barre dicono per quanta parte del tratto la moto sta in ciascuna condizione, su tutti i passaggi usati. Distanza dal race sag: positivo = più affondata del sag${many ? '; linea continua = forcella, tratteggiata = mono' : ''}.</p></div>`;
 }
 function segCharts(D) {
   const seg = S.mapSeg;
@@ -2595,6 +2652,20 @@ function segCharts(D) {
   chart($('#cSegPF'), Object.assign({ series: sers('front', COLORS[0]), ymin: 0, yunit: ' mm', tipfmt: (v) => f(v, 0), hlines: [{ y: P0.sagAnt, color: ST_COL.sag }] }, base));
   chart($('#cSegPR'), Object.assign({ series: sers('rear', COLORS[1]), ymin: 0, yunit: ' mm', tipfmt: (v) => f(v, 0), hlines: [{ y: P0.sagPost, color: ST_COL.sag }] }, base));
   const vser = (key) => (single ? [{ name: tr[0].name, x: tr[0].xs, y: tr[0].t[key], color: ST_COL.comp, sign: [ST_COL.comp, ST_COL.rit], width: 1.6 }] : sers(key));
+  // bilanciamento e distanza dal race sag lungo il tratto
+  const bt = tr.map((q) => { const b = C.balanceRange(q.x.raw, q.x.P, q.x.show.i0, q.x.show.i1); const k = seg.len / (q.x.show.len || seg.len); return b && { q, b, xs: b.x.map((v) => v * k) }; }).filter(Boolean);
+  if (bt.length) {
+    chart($('#cSegBil'), Object.assign({
+      series: bt.map((o) => ({ name: o.q.name, x: o.xs, y: o.b.bil, color: single ? COLORS[3] : colorOf(o.q.x.s.id), width: o.q.x.cur ? 2 : 1.6 })),
+      hlines: [{ y: P0.targetBil + P0.sogliaBil, color: '#5b6875' }, { y: P0.targetBil - P0.sogliaBil, color: '#5b6875' }],
+      yunit: ' punti', tipfmt: (v) => f(v, 1, true) }, base));
+    chart($('#cSegSag'), Object.assign({
+      series: bt.flatMap((o) => single
+        ? [{ name: 'Forcella', x: o.xs, y: o.b.fa, color: COLORS[0] }, { name: 'Mono (ruota)', x: o.xs, y: o.b.po, color: COLORS[1] }]
+        : [{ name: 'Forc. ' + o.q.name, x: o.xs, y: o.b.fa, color: colorOf(o.q.x.s.id) }, { name: 'Mono ' + o.q.name, x: o.xs, y: o.b.po, color: colorOf(o.q.x.s.id), dash: true }]),
+      hlines: [{ y: 0, color: ST_COL.sag }],
+      yunit: ' mm', tipfmt: (v) => f(v, 0, true) }, base));
+  }
   const vfmt = (key) => { const m = Math.max(...tr.flatMap((q) => q.t[key].map(Math.abs)).filter(Number.isFinite)); return (v) => f(v, m < 0.6 ? 2 : 1); };
   chart($('#cSegVF'), Object.assign({ series: vser('vF'), yunit: ' m/s', yfmt: vfmt('vF'), tipfmt: (v) => f(v, 2, true) }, base));
   chart($('#cSegVR'), Object.assign({ series: vser('vR'), yunit: ' m/s', yfmt: vfmt('vR'), tipfmt: (v) => f(v, 2, true) }, base));
