@@ -1502,11 +1502,12 @@ const SETUP = [
     ['forc_molla', 'Molla', 'N/mm'], ['forc_olio', 'Livello olio', 'mm'], ['forc_altezza', 'Steli sporgenti', 'mm']]],
   ['Mono', [['mono_comp_lv', 'Comp. basse vel.', 'click'], ['mono_comp_av', 'Comp. alte vel.', 'giri'], ['mono_rit', 'Ritorno', 'click'],
     ['mono_molla', 'Molla', 'N/mm'], ['mono_precarico', 'Precarico', 'mm']]],
+  ['Registro MX-Tech', [['mx_lsb', 'LSB', 'click'], ['mx_lsr', 'LSR', 'click'], ['mx_msc', 'MSC', 'click']]],
   ['Race sag (riferimento per l\'analisi)', [['sag_ant', 'Race sag forcella', 'mm'], ['sag_post', 'Race sag posteriore (ruota)', 'mm']]],
   ['Altro', [['gomma_ant', 'Pressione gomma ant.', 'bar'], ['gomma_post', 'Pressione gomma post.', 'bar']]],
 ];
 const SETUP_KEYS = SETUP.flatMap(([, fs]) => fs.map((x) => x[0]));
-const SETUP_LABEL = Object.fromEntries(SETUP.flatMap(([g, fs]) => fs.map((x) => [x[0], (g.startsWith('Race') ? '' : g + ' ') + x[1].toLowerCase()])));
+const SETUP_LABEL = Object.fromEntries(SETUP.flatMap(([g, fs]) => fs.map((x) => [x[0], (g.startsWith('Race') ? '' : g + ' ') + (x[1] === x[1].toUpperCase() ? x[1] : x[1].toLowerCase())])));
 
 /* ---------------------------------------------------------------- database */
 const DB = {
@@ -1575,6 +1576,8 @@ function setupSummary(st) {
   if (g('mono_comp_lv') !== null || g('mono_comp_av') !== null || g('mono_rit') !== null)
     parts.push(`M C${g('mono_comp_lv') ?? '–'}/${g('mono_comp_av') ?? '–'} R${g('mono_rit') ?? '–'}`);
   if (g('mono_precarico') !== null) parts.push(`prec. ${g('mono_precarico')}`);
+  if (g('mx_lsb') !== null || g('mx_lsr') !== null || g('mx_msc') !== null)
+    parts.push(`MX LSB${g('mx_lsb') ?? '–'} LSR${g('mx_lsr') ?? '–'} MSC${g('mx_msc') ?? '–'}`);
   return parts.join(' · ');
 }
 function sessTitle(s) {
